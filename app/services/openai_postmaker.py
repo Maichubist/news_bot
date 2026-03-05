@@ -8,41 +8,22 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger("editor.openai")
 
 
-DEFAULT_PROMPT = (
-    "Ти професійний новинний редактор Telegram-каналу.\n\n"
-    "Твоє завдання: (1) оцінити, чи варто публікувати матеріал як новину, (2) якщо так — написати короткий пост.\n\n"
-    "Шкала score: число від 0.0 до 1.0 (0 = точно не варто, 1 = максимально важливо/цікаво).\n"
-    "should_post = false, якщо це реклама/партнерський матеріал/дайджест/розсилка/подкаст/відео/купон/знижка/оголошення/біржові котирування без новини/поради купити.\n\n"
-    "Перепиши новину українською мовою у короткий та привабливий формат для Telegram.\n\n"
-    "Правила:\n"
-    "1. Заголовок має бути чіпким і зрозумілим, підкреслювати конфлікт, наслідки або важливість події.\n"
-    "2. Уникай бюрократичних формулювань.\n"
-    "3. Пиши коротко і просто.\n"
-    "4. Максимальний обсяг — 550 символів.\n"
-    "5. Використовуй структуру:\n\n"
-    "Заголовок\n\n"
-    "1–2 короткі речення про подію (без міток типу 'Що сталося:').\n\n"
-    "2–3 короткі пункти, чому це важливо (кожен пункт — одне речення).\n\n"
-    "6. Не вигадуй факти — використовуй лише інформацію з джерела.\n"
-    "7. НЕ пиши слово 'Заголовок' буквально.\n\n"
-    "Новина:\n{news_text}"
-)
-
-
 @dataclass(frozen=True)
 class PostDecision:
     score: float
     should_post: bool
     post_text: str
     why: List[str]
+    category: str
 
 
 class OpenAINewsPostMaker:
-    def __init__(self, http, api_key: str, model: str, prompt: str | None = None):
+    def __init__(self, http, api_key: str, model: str, prompt: str | None = None, categories: Optional[List[Dict[str, str]]] = None):
         self.http = http
         self.api_key = api_key
         self.model = model
-        self.prompt = (prompt or "").strip() or DEFAULT_PROMPT
+        self.prompt = (prompt or "").strip()
+        self.categories = categories or []
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -60,6 +41,11 @@ class OpenAINewsPostMaker:
 
         prompt = self.prompt.format(news_text=news_text)
 
+        # Category instructions (kept short, schema enforces the enum)
+        if self.categories:
+            cats = ", ".join([f"{c['slug']} ({c['title']})" for c in self.categories if c.get('slug') and c.get('title')])
+            prompt += "\n\nДодатково: обери категорію category зі списку: " + cats + "."
+
         schema: Dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
@@ -68,9 +54,15 @@ class OpenAINewsPostMaker:
                 "should_post": {"type": "boolean"},
                 "why": {"type": "array", "items": {"type": "string"}},
                 "post_text": {"type": "string"},
+                "category": {"type": "string"},
             },
-            "required": ["score", "should_post", "why", "post_text"],
+            "required": ["score", "should_post", "why", "post_text", "category"],
         }
+
+        # If we have configured categories, enforce enum.
+        slugs = [str(c.get("slug")) for c in (self.categories or []) if str(c.get("slug") or "").strip()]
+        if slugs:
+            schema["properties"]["category"]["enum"] = slugs
 
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -131,6 +123,7 @@ class OpenAINewsPostMaker:
                 should_post=bool(obj.get("should_post")),
                 post_text=post_text,
                 why=[str(x) for x in (obj.get("why") or [])][:6],
+                category=str(obj.get("category") or "other").strip() or "other",
             )
         except Exception as ex:
             log.warning("OpenAI postmaker parse error: %s", ex)

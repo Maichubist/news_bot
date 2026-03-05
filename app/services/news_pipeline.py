@@ -6,9 +6,8 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from app.text.summary import is_good_summary, truncate
 from app.dedup.semantic import pack_vec
-
+from app.text.summary import is_good_summary, truncate
 
 log = logging.getLogger("services.pipeline")
 
@@ -37,18 +36,30 @@ class NewsPipeline:
         images_cfg = getattr(cfg, "images", None)
         self.enable_og_image = bool(getattr(images_cfg, "og_fetch", True))
 
+    # -------------------------
+    # main loop
+    # -------------------------
     def run_once(self) -> None:
-        items = self.rss.fetch(self.cfg.sources)
-
         inserted = 0
         embedded = 0
         semantic_dups = 0
         scored = 0
         approved = 0
+        posted = 0
 
         # cutoff для економії LLM: обробляємо (скоринг/пост) лише свіжі новини
         now_utc = datetime.now(timezone.utc)
         cutoff_hours = int(getattr(self.cfg.posting, "only_last_hours", 0) or 0)
+
+        # 0) Важливо: якщо в БД вже "висить" готовий до посту запис — постимо 1 одразу
+        # (щоб не залишались pending, якщо раніше впало на телезі/мережі)
+        try:
+            if posted < self.cfg.posting.max_posts_per_run:
+                posted += self._post_pending_roots(only_last_hours=cutoff_hours, limit=1)
+        except Exception:
+            log.exception("Pre-post pending roots failed")
+
+        items = self.rss.fetch(self.cfg.sources)
 
         for it in items:
             h = self.exact.make_hash(it.title, it.link)
@@ -80,7 +91,7 @@ class NewsPipeline:
             if self.cfg.embeddings.require_good_summary and not is_good_summary(it.summary):
                 continue
 
-            # Embeddings should be robust: always include summary if present (even if короткий).
+            # Embeddings: title + (optional) summary
             text_for_vec = (it.title or "").strip()
             if it.summary:
                 text_for_vec += "\n\n" + truncate(it.summary, max_len=500)
@@ -127,15 +138,45 @@ class NewsPipeline:
             if should_post:
                 approved += 1
 
+            # map category slug -> category_id (fallback to 'other')
+            cat_slug = (getattr(decision, "category", "") or "").strip() or "other"
+            cat_id = self.repo.category_id(cat_slug) or self.repo.category_id("other")
+
             self.repo.set_score_and_posttext(
                 item_hash=h,
                 score=decision.score,
                 should_post=should_post,
                 post_text=decision.post_text if should_post else None,
                 why=decision.why,
+                category_id=cat_id,
             )
 
-        posted = self._post_pending_roots(only_last_hours=cutoff_hours)
+            # 3) ГОЛОВНА ЗМІНА:
+            # Якщо новина вже оцінена як така, що має поститись — постимо її ОДРАЗУ,
+            # без очікування, доки цикл пройде по всіх новинах.
+            if should_post and posted < self.cfg.posting.max_posts_per_run:
+                ok = self._post_now(
+                    item_hash=h,
+                    title=it.title,
+                    source=it.source,
+                    link=it.link,
+                    image_url=getattr(it, "image_url", None),
+                    post_text=decision.post_text,
+                    category_slug=cat_slug,
+                )
+                if ok:
+                    posted += 1
+                    # не постимо "pending" додатково (щоб уникнути подвійних постів/бурсту)
+                    continue
+                else:
+                    # якщо постинг впав — лишимо як error, а не будемо спамити спробами в цьому ж циклі
+                    continue
+
+            # fallback: якщо не було миттєвого посту (або should_post=False) —
+            # можна акуратно спробувати запостити 1 pending, але це не обов'язково.
+            # Тут залишаємо м’яку поведінку: не більше 1.
+            if posted < self.cfg.posting.max_posts_per_run:
+                posted += self._post_pending_roots(only_last_hours=cutoff_hours, limit=1)
 
         log.info(
             "Collected=%d InsertedNew=%d Embedded=%d SemanticDups=%d Scored=%d Approved=%d Posted=%d threshold=%.2f",
@@ -155,6 +196,95 @@ class NewsPipeline:
 
         self.maybe_post_daily_digest()
 
+    # -------------------------
+    # immediate posting (no waiting)
+    # -------------------------
+    def _post_now(
+        self,
+        item_hash: str,
+        title: str,
+        source: str,
+        link: str,
+        image_url: Optional[str],
+        post_text: str,
+        category_slug: str,
+    ) -> bool:
+        try:
+            text = (post_text or "").strip()
+            if not text:
+                return False
+
+            # Prevent silly "Заголовок" as title
+            lines = [l.rstrip() for l in text.split("\n")]
+            if lines and lines[0].strip().lower() in ("заголовок", "headline", "title"):
+                lines[0] = (title or "").strip() or "Новина"
+                text = "\n".join(lines).strip()
+
+            # Add hashtag via cfg.categories (so we don't need extra SQL here)
+            hashtag = self._hashtag_for_slug(category_slug)
+
+            row_for_format = {
+                "post_text": text,
+                "link": link,
+                "source": source,
+                "category_hashtag": hashtag,
+            }
+            formatted = self.formatter.format_row(row_for_format)
+
+            # OG image has priority (better quality)
+            img_url = image_url
+            og = self._extract_og_image(link)
+            if og:
+                img_url = og
+                try:
+                    self.repo.update_image_url(item_hash, og)
+                except Exception:
+                    pass
+
+            ok = False
+            if img_url:
+                dl = self._download_image(img_url)
+                if dl:
+                    bts, fname = dl
+                    ok, _ = self.tg.send_photo_with_id(bts, caption_text=formatted, disable_preview=True, filename=fname)
+                else:
+                    ok, _ = self.tg.send_message_with_id(formatted, disable_preview=True)
+            else:
+                ok, _ = self.tg.send_message_with_id(formatted, disable_preview=True)
+
+            if not ok:
+                self.repo.mark_error(item_hash)
+                return False
+
+            self.repo.mark_posted(item_hash)
+            time.sleep(self.cfg.app.sleep_between_posts_sec)
+            return True
+
+        except Exception:
+            log.exception("Immediate post failed")
+            try:
+                self.repo.mark_error(item_hash)
+            except Exception:
+                pass
+            return False
+
+    def _hashtag_for_slug(self, slug: str) -> str:
+        try:
+            cats = getattr(self.cfg, "categories", None) or []
+            for c in cats:
+                if (getattr(c, "slug", "") or "").strip() == slug:
+                    return (getattr(c, "hashtag", "") or "").strip()
+            # fallback
+            for c in cats:
+                if (getattr(c, "slug", "") or "").strip() == "other":
+                    return (getattr(c, "hashtag", "") or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    # -------------------------
+    # image helpers
+    # -------------------------
     def _extract_og_image(self, url: str) -> Optional[str]:
         if not self.enable_og_image:
             return None
@@ -196,14 +326,17 @@ class NewsPipeline:
             ext = ".webp"
         return r.content, f"image{ext}"
 
-    def _post_pending_roots(self, only_last_hours: int) -> int:
+    # -------------------------
+    # pending posting (older items)
+    # -------------------------
+    def _post_pending_roots(self, only_last_hours: int, limit: int = 50) -> int:
         if only_last_hours <= 0:
             only_last_hours = 24
 
         now_utc = datetime.now(timezone.utc)
         posted = 0
 
-        pending = self.repo.pick_pending_roots(only_last_hours=only_last_hours, limit=50)
+        pending = self.repo.pick_pending_roots(only_last_hours=only_last_hours, limit=int(limit))
         for row in pending:
             root_hash = row["item_hash"]
             created_iso = row["created_at_utc"]
@@ -234,7 +367,19 @@ class NewsPipeline:
                 post_text = "⚡ " + post_text
 
             extra = "" if sources_cnt <= 1 else f"· ще {sources_cnt - 1} джерел"
-            text = self.formatter.format_row({"post_text": post_text, "link": row["link"], "source": row["source"]})
+            try:
+                category_hashtag = (row["category_hashtag"] or "").strip()
+            except Exception:
+                category_hashtag = ""
+
+            text = self.formatter.format_row(
+                {
+                    "post_text": post_text,
+                    "link": row["link"],
+                    "source": row["source"],
+                    "category_hashtag": category_hashtag,
+                }
+            )
             if extra:
                 text = text + " " + extra
 
@@ -269,6 +414,9 @@ class NewsPipeline:
 
         return posted
 
+    # -------------------------
+    # digest
+    # -------------------------
     def maybe_post_daily_digest(self) -> None:
         now_local = datetime.now()
         if now_local.hour != self.digest_hour_local:

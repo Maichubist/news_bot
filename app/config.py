@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List
+import os
 import yaml
 
 
@@ -21,6 +22,20 @@ class TelegramCfg:
 class OpenAICfg:
     api_key: str
     model: str = "text-embedding-3-small"
+
+
+@dataclass(frozen=True)
+class CategoryCfg:
+    """News category configuration.
+
+    slug: stable identifier stored in DB and used by the LLM classifier
+    title: human-friendly Ukrainian name
+    hashtag: tag appended to each Telegram post
+    """
+
+    slug: str
+    title: str
+    hashtag: str
 
 
 @dataclass(frozen=True)
@@ -102,6 +117,7 @@ class TranslateCfg:
 class AppConfig:
     telegram: TelegramCfg
     openai: OpenAICfg
+    categories: List[CategoryCfg]
     sources: List[SourceCfg]
     db: DbCfg
     posting: PostingCfg
@@ -139,6 +155,40 @@ class AppConfig:
         llm = raw.get("llm", {})
         filt = raw.get("filters", {})
 
+        # Secrets must live in environment variables (loaded from .env)
+        tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
+        oa_key = os.getenv("OPENAI_API_KEY")
+        if not tg_token:
+            raise ValueError("Missing TELEGRAM_TOKEN in environment/.env")
+        if not oa_key:
+            raise ValueError("Missing OPENAI_API_KEY in environment/.env")
+
+        # Categories (configurable, stored in DB)
+        cats_raw = raw.get("categories")
+        if not isinstance(cats_raw, list) or not cats_raw:
+            cats_raw = [
+                {"slug": "war", "title": "Війна", "hashtag": "#війна"},
+                {"slug": "politics", "title": "Політика", "hashtag": "#політика"},
+                {"slug": "economy", "title": "Економіка", "hashtag": "#економіка"},
+                {"slug": "technology", "title": "Технології", "hashtag": "#технології"},
+                {"slug": "business", "title": "Бізнес", "hashtag": "#бізнес"},
+                {"slug": "society", "title": "Суспільство", "hashtag": "#суспільство"},
+                {"slug": "science", "title": "Наука", "hashtag": "#наука"},
+                {"slug": "other", "title": "Інше", "hashtag": "#інше"},
+            ]
+
+        categories_cfg = [
+            CategoryCfg(
+                slug=str(c.get("slug") or "").strip(),
+                title=str(c.get("title") or "").strip(),
+                hashtag=str(c.get("hashtag") or "").strip(),
+            )
+            for c in cats_raw
+            if str(c.get("slug") or "").strip()
+        ]
+        if not categories_cfg:
+            raise ValueError("Config key 'categories' must be a non-empty list")
+
         sources_raw = raw.get("sources", [])
         if not isinstance(sources_raw, list) or not sources_raw:
             raise ValueError("Config key 'sources' must be a non-empty list")
@@ -154,13 +204,14 @@ class AppConfig:
 
         return AppConfig(
             telegram=TelegramCfg(
-                token=str(_req(tg, "token")),
+                token=str(tg_token),
                 chat_id=int(_req(tg, "chat_id")),
             ),
             openai=OpenAICfg(
-                api_key=str(_req(oa, "api_key")),
+                api_key=str(oa_key),
                 model=str(oa.get("model", "text-embedding-3-small")),
             ),
+            categories=categories_cfg,
             sources=[
                 SourceCfg(
                     name=str(s["name"]),

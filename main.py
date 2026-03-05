@@ -1,6 +1,8 @@
 import time
 import logging
 
+from dotenv import load_dotenv
+
 from app.config import AppConfig
 from app.logging_setup import setup_logging
 from app.http import build_verify_option, RequestsSession
@@ -21,6 +23,9 @@ log = logging.getLogger("main")
 
 def main():
 
+    # Load secrets from .env (TELEGRAM_TOKEN, OPENAI_API_KEY, etc.)
+    load_dotenv()
+
     cfg = AppConfig.load("config.yaml")
 
     setup_logging(cfg.app.log_level)
@@ -32,6 +37,7 @@ def main():
 
     repo = SqliteNewsRepository(db_path=cfg.db.path)
     repo.init_db()
+    repo.ensure_categories(cfg.categories)
 
     rss = RssFetcher(http=http)
     # Global RSS filters (ads/promos/video/newsletters/etc.)
@@ -70,6 +76,7 @@ def main():
         api_key=cfg.openai.api_key,
         model=cfg.llm.post_model,
         prompt=cfg.llm.post_prompt,
+        categories=[{"slug": c.slug, "title": c.title} for c in cfg.categories],
     )
     digestmaker = OpenAIDailyDigestMaker(
         http=http,

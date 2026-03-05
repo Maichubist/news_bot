@@ -29,7 +29,20 @@ class PostFormatter:
         link = row["link"]
         source = row["source"]
 
+        hashtag = ""
+        try:
+            hashtag = (row["category_hashtag"] or "").strip()
+        except Exception:
+            try:
+                hashtag = (row.get("category_hashtag") or "").strip()  # type: ignore[attr-defined]
+            except Exception:
+                hashtag = ""
+
         lines = [base]
+
+        if hashtag:
+            lines.extend(["", hashtag])
+
         if self.include_source:
             lines.extend(["", f"— SRC[{source}]({link})"])
         return "\n".join(lines)

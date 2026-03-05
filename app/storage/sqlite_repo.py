@@ -15,9 +15,17 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-SCHEMA_V2 = """
+SCHEMA_V3 = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=ON;
+
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    hashtag TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS news_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,6 +40,8 @@ CREATE TABLE IF NOT EXISTS news_items (
     posted_at_utc TEXT NULL,
     status TEXT NOT NULL DEFAULT 'new',
 
+    category_id INTEGER NULL,
+
     embedding_blob BLOB NULL,
     embedding_dim INTEGER NULL,
     embedding_model TEXT NULL,
@@ -43,12 +53,15 @@ CREATE TABLE IF NOT EXISTS news_items (
     post_text TEXT NULL,
     why_json TEXT NULL,
     scored_at_utc TEXT NULL
+
+    ,FOREIGN KEY(category_id) REFERENCES categories(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_news_status_created ON news_items(status, created_at_utc);
 CREATE INDEX IF NOT EXISTS idx_news_published ON news_items(published_at_utc);
 CREATE INDEX IF NOT EXISTS idx_news_dup_of ON news_items(dup_of);
 CREATE INDEX IF NOT EXISTS idx_news_should_post ON news_items(should_post, status);
+CREATE INDEX IF NOT EXISTS idx_news_category ON news_items(category_id);
 
 CREATE TABLE IF NOT EXISTS daily_summaries (
     day_utc TEXT PRIMARY KEY,
@@ -70,6 +83,7 @@ DESIRED_COLS = [
     "created_at_utc",
     "posted_at_utc",
     "status",
+    "category_id",
     "embedding_blob",
     "embedding_dim",
     "embedding_model",
@@ -99,7 +113,7 @@ class SqliteNewsRepository:
 
     def init_db(self) -> None:
         con = self._connect()
-        con.executescript(SCHEMA_V2)
+        con.executescript(SCHEMA_V3)
         con.commit()
         self._migrate_and_compact(con)
 
@@ -111,12 +125,12 @@ class SqliteNewsRepository:
         if set(cols) == set(DESIRED_COLS):
             return
 
-        log.info("Rebuilding DB schema to v2 (drop legacy columns)")
+        log.info("Rebuilding DB schema to v3 (drop legacy columns)")
 
         # Create new table
         con.executescript(
             """
-            CREATE TABLE IF NOT EXISTS news_items_v2 (
+            CREATE TABLE IF NOT EXISTS news_items_v3 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_hash TEXT NOT NULL UNIQUE,
                 source TEXT NOT NULL,
@@ -129,6 +143,8 @@ class SqliteNewsRepository:
                 posted_at_utc TEXT NULL,
                 status TEXT NOT NULL DEFAULT 'new',
 
+                category_id INTEGER NULL,
+
                 embedding_blob BLOB NULL,
                 embedding_dim INTEGER NULL,
                 embedding_model TEXT NULL,
@@ -140,6 +156,8 @@ class SqliteNewsRepository:
                 post_text TEXT NULL,
                 why_json TEXT NULL,
                 scored_at_utc TEXT NULL
+
+                ,FOREIGN KEY(category_id) REFERENCES categories(id)
             );
             """
         )
@@ -150,12 +168,14 @@ class SqliteNewsRepository:
         emb_expr = "embedding_blob" if "embedding_blob" in legacy_cols else ("embedding" if "embedding" in legacy_cols else "NULL")
         img_expr = "image_url" if "image_url" in legacy_cols else "NULL"
         why_expr = "why_json" if "why_json" in legacy_cols else ("score_json" if "score_json" in legacy_cols else "NULL")
+        cat_expr = "category_id" if "category_id" in legacy_cols else "NULL"
 
         con.execute(
             f"""
-            INSERT OR IGNORE INTO news_items_v2 (
+            INSERT OR IGNORE INTO news_items_v3 (
                 item_hash, source, title, link, summary, image_url,
                 published_at_utc, created_at_utc, posted_at_utc, status,
+                category_id,
                 embedding_blob, embedding_dim, embedding_model, dup_of, dup_score,
                 score, should_post, post_text, why_json, scored_at_utc
             )
@@ -170,6 +190,7 @@ class SqliteNewsRepository:
                 created_at_utc,
                 posted_at_utc,
                 status,
+                {cat_expr},
                 {emb_expr},
                 embedding_dim,
                 embedding_model,
@@ -185,7 +206,7 @@ class SqliteNewsRepository:
         )
 
         con.execute("DROP TABLE news_items")
-        con.execute("ALTER TABLE news_items_v2 RENAME TO news_items")
+        con.execute("ALTER TABLE news_items_v3 RENAME TO news_items")
 
         # Recreate indexes
         con.executescript(
@@ -194,9 +215,30 @@ class SqliteNewsRepository:
             CREATE INDEX IF NOT EXISTS idx_news_published ON news_items(published_at_utc);
             CREATE INDEX IF NOT EXISTS idx_news_dup_of ON news_items(dup_of);
             CREATE INDEX IF NOT EXISTS idx_news_should_post ON news_items(should_post, status);
+            CREATE INDEX IF NOT EXISTS idx_news_category ON news_items(category_id);
             """
         )
         con.commit()
+
+    def ensure_categories(self, categories) -> None:
+        """Create/Upsert configured categories (slug/title/hashtag)."""
+        con = self._connect()
+        con.execute("PRAGMA foreign_keys=ON")
+        for c in categories:
+            con.execute(
+                """
+                INSERT INTO categories(slug, title, hashtag)
+                VALUES (?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET title=excluded.title, hashtag=excluded.hashtag
+                """,
+                (str(c.slug), str(c.title), str(c.hashtag)),
+            )
+        con.commit()
+
+    def category_id(self, slug: str) -> Optional[int]:
+        con = self._connect()
+        r = con.execute("SELECT id FROM categories WHERE slug=?", (slug,)).fetchone()
+        return int(r["id"]) if r else None
 
     # --- writes/reads ---
     def upsert_item(
@@ -280,6 +322,7 @@ class SqliteNewsRepository:
         should_post: bool,
         post_text: Optional[str],
         why: List[str],
+        category_id: Optional[int] = None,
     ) -> None:
         con = self._connect()
         con.execute(
@@ -289,7 +332,8 @@ class SqliteNewsRepository:
                 should_post=?,
                 post_text=?,
                 why_json=?,
-                scored_at_utc=?
+                scored_at_utc=?,
+                category_id=?
             WHERE item_hash=?
             """,
             (
@@ -298,6 +342,7 @@ class SqliteNewsRepository:
                 post_text,
                 json.dumps(why[:6], ensure_ascii=False),
                 utc_now_iso(),
+                category_id,
                 item_hash,
             ),
         )
@@ -360,8 +405,9 @@ class SqliteNewsRepository:
         cutoff_iso = cutoff.isoformat(timespec="seconds")
         return con.execute(
             """
-            SELECT *
-            FROM news_items
+            SELECT ni.*, c.slug AS category_slug, c.title AS category_title, c.hashtag AS category_hashtag
+            FROM news_items ni
+            LEFT JOIN categories c ON c.id = ni.category_id
             WHERE status='new'
               AND dup_of IS NULL
               AND should_post=1
