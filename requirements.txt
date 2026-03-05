@@ -1,0 +1,6 @@
+feedparser==6.0.11
+PyYAML==6.0.2
+python-dateutil==2.9.0.post0
+requests==2.32.3
+numpy==2.2.2
+certifi==2025.1.31
