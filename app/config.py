@@ -26,13 +26,6 @@ class OpenAICfg:
 
 @dataclass(frozen=True)
 class CategoryCfg:
-    """News category configuration.
-
-    slug: stable identifier stored in DB and used by the LLM classifier
-    title: human-friendly Ukrainian name
-    hashtag: tag appended to each Telegram post
-    """
-
     slug: str
     title: str
     hashtag: str
@@ -42,14 +35,12 @@ class CategoryCfg:
 class SourceCfg:
     name: str
     url: str
-    # Optional per-source filters (regex patterns). If any pattern matches, item is discarded.
     deny_title_regex: List[str] | None = None
     deny_url_regex: List[str] | None = None
 
 
 @dataclass(frozen=True)
 class FiltersCfg:
-    # Global filters applied to all sources (regex patterns). If any matches, item is discarded.
     deny_title_regex: List[str]
     deny_url_regex: List[str]
     deny_summary_regex: List[str]
@@ -62,12 +53,27 @@ class DbCfg:
 
 
 @dataclass(frozen=True)
+class WrapRuleCfg:
+    key: str
+    title: str
+    categories: List[str]
+    min_items: int = 3
+    lookback_hours: int = 6
+    cooldown_minutes: int = 90
+    min_sources: int = 2
+    source_label: str = "Topic Wrap"
+    hashtag_slug: str = "other"
+    prompt_template: str = ""
+
+
+@dataclass(frozen=True)
 class PostingCfg:
     max_posts_per_run: int = 5
     only_last_hours: int = 24
     include_source_name: bool = True
     cluster_wait_minutes: int = 5
     breaking_sources_threshold: int = 3
+    wrap_rules: List[WrapRuleCfg] | None = None
 
 
 @dataclass(frozen=True)
@@ -79,14 +85,19 @@ class ImagesCfg:
 class LlmCfg:
     post_model: str = "gpt-4o-mini"
     digest_model: str = "gpt-4o-mini"
+    wrap_model: str = "gpt-4o-mini"
     post_prompt: str = ""
+    wrap_prompt: str = ""
     digest_prompt: str = ""
+    market_wrap_prompt: str = ""
+    geopolitical_wrap_prompt: str = ""
+    tech_wrap_prompt: str = ""
 
 
 @dataclass(frozen=True)
 class NetworkCfg:
     timeout_sec: int = 25
-    verify: Any = "certifi"  # "certifi" | false | true | path-to-ca-bundle
+    verify: Any = "certifi"
 
 
 @dataclass(frozen=True)
@@ -105,6 +116,7 @@ class AppCfg:
 @dataclass(frozen=True)
 class MonitorCfg:
     every_seconds: int = 120
+
 
 @dataclass(frozen=True)
 class TranslateCfg:
@@ -144,6 +156,7 @@ class AppConfig:
             model=str(tr.get("model", "gpt-5-mini")),
             max_chars_summary=int(tr.get("max_chars_summary", 350)),
         )
+
         tg = raw.get("telegram", {})
         oa = raw.get("openai", {})
         db = raw.get("db", {})
@@ -155,7 +168,6 @@ class AppConfig:
         llm = raw.get("llm", {})
         filt = raw.get("filters", {})
 
-        # Secrets must live in environment variables (loaded from .env)
         tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
         oa_key = os.getenv("OPENAI_API_KEY")
         if not tg_token:
@@ -163,7 +175,6 @@ class AppConfig:
         if not oa_key:
             raise ValueError("Missing OPENAI_API_KEY in environment/.env")
 
-        # Categories (configurable, stored in DB)
         cats_raw = raw.get("categories")
         if not isinstance(cats_raw, list) or not cats_raw:
             cats_raw = [
@@ -202,6 +213,104 @@ class AppConfig:
                 return [str(x) for x in v if str(x).strip()]
             return []
 
+        llm_cfg = LlmCfg(
+            post_model=str(llm.get("post_model", "gpt-4o-mini")),
+            digest_model=str(llm.get("digest_model", "gpt-4o-mini")),
+            wrap_model=str(llm.get("wrap_model", llm.get("market_wrap_model", "gpt-4o-mini"))),
+            post_prompt=str(llm.get("post_prompt", "")),
+            wrap_prompt=str(llm.get("wrap_prompt", "")),
+            digest_prompt=str(llm.get("digest_prompt", "")),
+            market_wrap_prompt=str(llm.get("market_wrap_prompt", "")),
+            geopolitical_wrap_prompt=str(llm.get("geopolitical_wrap_prompt", "")),
+            tech_wrap_prompt=str(llm.get("tech_wrap_prompt", "")),
+        )
+
+        def _resolve_prompt_template(value: Any, rule_key: str = "") -> str:
+            key = str(value or "").strip()
+            if key:
+                if hasattr(llm_cfg, key):
+                    return str(getattr(llm_cfg, key) or "").strip()
+                return key
+
+            # Якщо prompt_template не задано, підбираємо найкращий дефолт
+            rk = (rule_key or "").lower()
+            if rk in ("economy_wrap", "economy", "market_wrap", "market"):
+                return str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
+            if rk in ("geopolitics_wrap", "geopolitics", "geopolitical_wrap", "war_wrap", "politics_wrap"):
+                return str(llm_cfg.geopolitical_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
+            if rk in ("technology_wrap", "technology", "tech_wrap", "tech", "science_wrap"):
+                return str(llm_cfg.tech_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
+
+            return str(llm_cfg.wrap_prompt or "").strip()
+
+        wrap_rules_raw = posting.get("wrap_rules")
+        wrap_rules: List[WrapRuleCfg] = []
+        if isinstance(wrap_rules_raw, list) and wrap_rules_raw:
+            for item in wrap_rules_raw:
+                if not isinstance(item, dict):
+                    continue
+
+                key = str(item.get("key") or item.get("name") or "").strip()
+                if not key:
+                    continue
+
+                title = str(item.get("title") or key).strip()
+
+                wrap_rules.append(
+                    WrapRuleCfg(
+                        key=key,
+                        title=title,
+                        categories=_as_list(item.get("categories")),
+                        min_items=int(item.get("min_items", 3)),
+                        lookback_hours=int(item.get("lookback_hours", 6)),
+                        cooldown_minutes=int(item.get("cooldown_minutes", 90)),
+                        min_sources=int(item.get("min_sources", 2)),
+                        source_label=str(item.get("source_label") or title).strip(),
+                        hashtag_slug=str(item.get("hashtag_slug") or "other").strip() or "other",
+                        prompt_template=_resolve_prompt_template(item.get("prompt_template"), key),
+                    )
+                )
+
+        if not wrap_rules:
+            wrap_rules = [
+                WrapRuleCfg(
+                    key="economy_wrap",
+                    title="Market Wrap",
+                    categories=["economy", "business"],
+                    min_items=3,
+                    lookback_hours=6,
+                    cooldown_minutes=90,
+                    min_sources=2,
+                    source_label="Market Wrap",
+                    hashtag_slug="economy",
+                    prompt_template=str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                ),
+                WrapRuleCfg(
+                    key="geopolitics_wrap",
+                    title="Geopolitics Wrap",
+                    categories=["war", "politics"],
+                    min_items=3,
+                    lookback_hours=6,
+                    cooldown_minutes=120,
+                    min_sources=2,
+                    source_label="Geopolitics Wrap",
+                    hashtag_slug="war",
+                    prompt_template=str(llm_cfg.geopolitical_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                ),
+                WrapRuleCfg(
+                    key="technology_wrap",
+                    title="Tech Wrap",
+                    categories=["technology", "science"],
+                    min_items=3,
+                    lookback_hours=8,
+                    cooldown_minutes=180,
+                    min_sources=2,
+                    source_label="Tech Wrap",
+                    hashtag_slug="technology",
+                    prompt_template=str(llm_cfg.tech_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                ),
+            ]
+
         return AppConfig(
             telegram=TelegramCfg(
                 token=str(tg_token),
@@ -231,6 +340,7 @@ class AppConfig:
                 include_source_name=bool(posting.get("include_source_name", True)),
                 cluster_wait_minutes=int(posting.get("cluster_wait_minutes", 5)),
                 breaking_sources_threshold=int(posting.get("breaking_sources_threshold", 3)),
+                wrap_rules=wrap_rules,
             ),
             network=NetworkCfg(
                 timeout_sec=int(network.get("timeout_sec", 25)),
@@ -247,15 +357,8 @@ class AppConfig:
             ),
             monitor=monitor_cfg,
             translate=translate_cfg,
-            images=ImagesCfg(
-                og_fetch=bool(images.get("og_fetch", True)),
-            ),
-            llm=LlmCfg(
-                post_model=str(llm.get("post_model", "gpt-4o-mini")),
-                digest_model=str(llm.get("digest_model", "gpt-4o-mini")),
-                post_prompt=str(llm.get("post_prompt", "")),
-                digest_prompt=str(llm.get("digest_prompt", "")),
-            ),
+            images=ImagesCfg(og_fetch=bool(images.get("og_fetch", True))),
+            llm=llm_cfg,
             filters=FiltersCfg(
                 deny_title_regex=_as_list(filt.get("deny_title_regex")),
                 deny_url_regex=_as_list(filt.get("deny_url_regex")),

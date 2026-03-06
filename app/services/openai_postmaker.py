@@ -15,6 +15,12 @@ class PostDecision:
     post_text: str
     why: List[str]
     category: str
+    tier: str = "C"
+    publish_mode: str = "digest"
+    event_key: str = ""
+    novelty_score: float = 0.0
+    impact_score: float = 0.0
+    ua_relevance_score: float = 0.0
 
 
 class OpenAINewsPostMaker:
@@ -35,16 +41,12 @@ class OpenAINewsPostMaker:
         news_text = title.strip()
         if summary:
             news_text += "\n\n" + summary.strip()
-
-        # Provide a little context to the model (helps it flag video/promo pages)
         news_text += f"\n\nДжерело: {source}\nURL: {url}"
 
         prompt = self.prompt.format(news_text=news_text)
-
-        # Category instructions (kept short, schema enforces the enum)
         if self.categories:
-            cats = ", ".join([f"{c['slug']} ({c['title']})" for c in self.categories if c.get('slug') and c.get('title')])
-            prompt += "\n\nДодатково: обери категорію category зі списку: " + cats + "."
+            cats = ", ".join([f"{c['slug']} ({c['title']})" for c in self.categories if c.get("slug") and c.get("title")])
+            prompt += "\n\nОбери category лише зі списку: " + cats + "."
 
         schema: Dict[str, Any] = {
             "type": "object",
@@ -55,11 +57,28 @@ class OpenAINewsPostMaker:
                 "why": {"type": "array", "items": {"type": "string"}},
                 "post_text": {"type": "string"},
                 "category": {"type": "string"},
+                "tier": {"type": "string", "enum": ["A", "B", "C", "D"]},
+                "publish_mode": {"type": "string", "enum": ["post", "wrap_candidate", "digest", "drop"]},
+                "event_key": {"type": "string"},
+                "novelty_score": {"type": "number", "minimum": 0, "maximum": 1},
+                "impact_score": {"type": "number", "minimum": 0, "maximum": 1},
+                "ua_relevance_score": {"type": "number", "minimum": 0, "maximum": 1},
             },
-            "required": ["score", "should_post", "why", "post_text", "category"],
+            "required": [
+                "score",
+                "should_post",
+                "why",
+                "post_text",
+                "category",
+                "tier",
+                "publish_mode",
+                "event_key",
+                "novelty_score",
+                "impact_score",
+                "ua_relevance_score",
+            ],
         }
 
-        # If we have configured categories, enforce enum.
         slugs = [str(c.get("slug")) for c in (self.categories or []) if str(c.get("slug") or "").strip()]
         if slugs:
             schema["properties"]["category"]["enum"] = slugs
@@ -70,7 +89,7 @@ class OpenAINewsPostMaker:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "post_decision_v2",
+                    "name": "post_decision_v3",
                     "schema": schema,
                     "strict": True,
                 }
@@ -78,11 +97,7 @@ class OpenAINewsPostMaker:
         }
 
         try:
-            r = self.http.post(
-                "https://api.openai.com/v1/responses",
-                json=payload,
-                headers=self._headers(),
-            )
+            r = self.http.post("https://api.openai.com/v1/responses", json=payload, headers=self._headers())
         except Exception as ex:
             log.warning("OpenAI postmaker error: %s", ex)
             return None
@@ -106,17 +121,12 @@ class OpenAINewsPostMaker:
                 for c in item.get("content", []):
                     if c.get("type") == "output_text" and c.get("text"):
                         out_text += c["text"]
-            out_text = (out_text or "").strip()
-            obj = json.loads(out_text)
-
+            obj = json.loads((out_text or "").strip())
             post_text = (obj.get("post_text") or "").strip()
-            if not post_text:
-                return None
-
-            # last sanity check against literal placeholder
-            first_line = post_text.split("\n", 1)[0].strip().lower()
+            first_line = post_text.split("\n", 1)[0].strip().lower() if post_text else ""
             if first_line in ("заголовок", "headline", "title"):
-                post_text = f"{title.strip()}\n\n" + "\n".join(post_text.split("\n")[1:]).strip()
+                body = "\n".join(post_text.split("\n")[1:]).strip()
+                post_text = f"{title.strip()}\n\n{body}".strip()
 
             return PostDecision(
                 score=float(obj.get("score") or 0.0),
@@ -124,6 +134,12 @@ class OpenAINewsPostMaker:
                 post_text=post_text,
                 why=[str(x) for x in (obj.get("why") or [])][:6],
                 category=str(obj.get("category") or "other").strip() or "other",
+                tier=str(obj.get("tier") or "C").strip() or "C",
+                publish_mode=str(obj.get("publish_mode") or "digest").strip() or "digest",
+                event_key=str(obj.get("event_key") or "").strip(),
+                novelty_score=float(obj.get("novelty_score") or 0.0),
+                impact_score=float(obj.get("impact_score") or 0.0),
+                ua_relevance_score=float(obj.get("ua_relevance_score") or 0.0),
             )
         except Exception as ex:
             log.warning("OpenAI postmaker parse error: %s", ex)

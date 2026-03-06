@@ -11,38 +11,28 @@ class PostFormatter:
         self.include_source = include_source
 
     def format(self, title: str, link: str, source: str, summary: Optional[str]) -> str:
-        # Legacy fallback formatter (used if no LLM post_text)
         lines = [title.strip()]
-
         if is_good_summary(summary):
-            lines.append("")
-            lines.append(truncate(summary, max_len=350))
-
-        if self.include_source:
-            lines.append("")
-            lines.append(f"— SRC[{source}]({link})")
-
+            lines.extend(["", truncate(summary, max_len=350)])
+        if self.include_source and source and link:
+            lines.extend(["", f"— SRC[{source}]({link})"])
+        elif self.include_source and source:
+            lines.extend(["", f"— {source}"])
         return "\n".join(lines)
 
     def format_row(self, row) -> str:
         base = (row["post_text"] or "").strip()
-        link = row["link"]
-        source = row["source"]
-
-        hashtag = ""
+        link = row.get("link") if hasattr(row, "get") else row["link"]
+        source = row.get("source") if hasattr(row, "get") else row["source"]
         try:
-            hashtag = (row["category_hashtag"] or "").strip()
+            hashtag = (row.get("category_hashtag") or "").strip() if hasattr(row, "get") else (row["category_hashtag"] or "").strip()
         except Exception:
-            try:
-                hashtag = (row.get("category_hashtag") or "").strip()  # type: ignore[attr-defined]
-            except Exception:
-                hashtag = ""
-
+            hashtag = ""
         lines = [base]
-
         if hashtag:
             lines.extend(["", hashtag])
-
-        if self.include_source:
+        if self.include_source and source and link:
             lines.extend(["", f"— SRC[{source}]({link})"])
+        elif self.include_source and source:
+            lines.extend(["", f"— {source}"])
         return "\n".join(lines)

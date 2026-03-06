@@ -18,6 +18,7 @@ from app.services.news_pipeline import NewsPipeline
 # from app.translate.openai_ua import OpenAIUaTranslator
 from app.services.openai_postmaker import OpenAINewsPostMaker
 from app.services.openai_daily_digest import OpenAIDailyDigestMaker
+from app.services.openai_market_wrap import OpenAIMarketWrapMaker
 
 log = logging.getLogger("main")
 
@@ -84,6 +85,12 @@ def main():
         model=cfg.llm.digest_model,
         prompt=cfg.llm.digest_prompt,
     )
+    wrapmaker = OpenAIMarketWrapMaker(
+        http=http,
+        api_key=cfg.openai.api_key,
+        model=cfg.llm.wrap_model,
+        default_prompt=cfg.llm.wrap_prompt,
+    )
 
     pipeline = NewsPipeline(
         cfg=cfg,
@@ -96,7 +103,8 @@ def main():
         formatter=fmt,
         # translator=translator,
         postmaker=postmaker,
-        digestmaker=digestmaker
+        digestmaker=digestmaker,
+        wrapmaker=wrapmaker,
     )
 
     every = cfg.monitor.every_seconds

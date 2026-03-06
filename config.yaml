@@ -4,7 +4,6 @@ telegram:
 openai:
   model: "text-embedding-3-small"
 
-
 categories:
   - slug: war
     title: "Війна"
@@ -30,54 +29,57 @@ categories:
   - slug: other
     title: "Інше"
     hashtag: "#інше"
-    
 
-# LLM models + prompts in one place
 llm:
   post_model: "gpt-4o-mini"
   digest_model: "gpt-4o-mini"
+  wrap_model: "gpt-4o-mini"
   post_prompt: |
-    Ти редактор популярного українського Telegram-каналу про світову політику, економіку та технології.
+    Ти професійний редактор українського Telegram-каналу про геополітику, економіку і технології.
 
-    Твоє завдання:
-    1) Оціни, чи ця новина достатньо важлива або цікава для публікації.
-    2) Якщо так — напиши короткий, яскравий пост українською мовою.
+    Завдання:
+    1) Визнач, чи це справді варта уваги новина.
+    2) Визнач режим публікації: окремий пост, кандидат у wrap, лише в digest або drop.
+    3) Якщо новина варта уваги, напиши короткий пост українською.
 
-    Формат відповіді:
-    score — число від 0.0 до 1.0 (наскільки новина важлива/цікава для потенційних читачів з України або матиме глобальний світовий ефект або ефект на все, що пов'язане з Україною)
-    should_post — true або false
-    post_text — текст поста
+    Формат відповіді JSON:
+    - score: 0..1
+    - should_post: true/false
+    - post_text: короткий пост
+    - why: 1-4 короткі причини
+    - category: одна категорія зі списку
+    - tier: A/B/C/D
+    - publish_mode: post | wrap_candidate | digest | drop
+    - event_key: короткий стабільний ключ події англійською lowercase через дефіс
+    - novelty_score: 0..1
+    - impact_score: 0..1
+    - ua_relevance_score: 0..1
 
-    should_post = false якщо це:
-    реклама, партнерський матеріал, розсилка, подкаст, відео, дайджест, купони, знижки, оголошення, або технічна інформація без реальної новини.
-
-    Вимоги до поста:
-
-    • Максимум 350 символів  
-    • Пиши живою українською мовою  
-    • Текст має читатися легко і швидко  
-
-    Структура поста:
-
-    Сильний заголовок (1 рядок)
-
-    1–2 короткі речення:
-    що саме сталося.
-
-    2–3 короткі речення:
-    чому це важливо, які можуть бути наслідки або контекст.
-
-    Правила стилю:
-
-    • Заголовок має бути чіпким і зрозумілим  
-    • Підкреслюй конфлікт, зміни або наслідки  
-    • Не використовуй бюрократичні фрази  
-    • Не пиши слова "Заголовок" або службові мітки  
-    • Не вигадуй фактів — використовуй тільки інформацію з новини  
-    • Пиши так, щоб читачу захотілося дочитати пост до кінця
+    Правила:
+    - should_post=false для реклами, партнерського матеріалу, відео, подкасту, колонок, дайджестів, добірок, купонів, вакансій, технічних сторінок без новини.
+    - tier A і publish_mode=post лише для великого нового факту, рішення, удару, санкцій, угоди або справді сильної новизни.
+    - publish_mode=wrap_candidate став для ринкових, геополітичних або технологічних сюжетів, які важливі, але краще виглядатимуть у зведеному пості разом з іншими новинами тієї ж хвилі.
+    - publish_mode=digest став для другорядних, похідних або коментарних сюжетів.
+    - publish_mode=drop став для слабкого шуму, повторів без новизни або явно непотрібних матеріалів.
+    - Не роздмухуй значення. Не пиши штучний пафос. Не вставляй без потреби фрази про вплив на Україну.
+    - Максимум 420 символів.
+    - Жодних службових міток у тексті. Не пиши слово "Заголовок".
 
     Новина:
     {news_text}
+  wrap_prompt: |
+    Ти редактор Telegram-каналу. Нижче кілька новин однієї хвилі для {wrap_name}.
+    Зроби один агрегований пост українською.
+
+    Вимоги:
+    - 1 сильний заголовок
+    - 2-4 короткі речення по суті
+    - поясни спільний сенс, а не повторюй кожну новину окремо
+    - максимум 650 символів
+    - без списків, без води, без вигаданих фактів
+
+    Новини:
+    {items}
   digest_prompt: |
     Ти редактор-аналітик щоденного Telegram-дайджесту.
     Зроби підсумок дня: {day_label}
@@ -113,7 +115,6 @@ sources:
     url: "https://www.ft.com/rss/home"
   - name: "Bloomberg"
     url: "https://feeds.bloomberg.com/markets/news.rss"
-    # Bloomberg іноді тягне відео/форматні матеріали
     deny_url_regex:
       - '(?i)/video'
   - name: "CNBC"
@@ -138,8 +139,6 @@ sources:
     url: "https://www.politico.com/rss/politics08.xml"
 
 filters:
-  # Глобальні фільтри, щоб реклама/форматні матеріали не потрапляли в БД
-  # (regex, застосовуються до title/url/summary на етапі RSS)
   deny_title_regex:
     - '(?i)\b(sponsored|advertorial|partner(ed)? content|paid post|promotion)\b'
     - '(?i)\b(podcast|video|watch|listen)\b'
@@ -161,12 +160,32 @@ posting:
   max_posts_per_run: 10
   only_last_hours: 24
   include_source_name: true
-  # multi-source logic
   cluster_wait_minutes: 5
   breaking_sources_threshold: 3
+  wrap_rules:
+    - name: economy_wrap
+      categories: [economy, business]
+      min_items: 3
+      lookback_hours: 6
+      cooldown_minutes: 90
+      min_sources: 2
+      hashtag_slug: economy
+    - name: geopolitics_wrap
+      categories: [war, politics]
+      min_items: 3
+      lookback_hours: 6
+      cooldown_minutes: 120
+      min_sources: 2
+      hashtag_slug: war
+    - name: technology_wrap
+      categories: [technology, science]
+      min_items: 3
+      lookback_hours: 8
+      cooldown_minutes: 180
+      min_sources: 2
+      hashtag_slug: technology
 
 images:
-  # Try to pull higher-quality og:image from the article page (used only for posts that will be published)
   og_fetch: true
 
 db:
