@@ -19,6 +19,8 @@ from app.services.news_pipeline import NewsPipeline
 from app.services.openai_postmaker import OpenAINewsPostMaker
 from app.services.openai_daily_digest import OpenAIDailyDigestMaker
 from app.services.openai_market_wrap import OpenAIMarketWrapMaker
+from app.services.analytics_service import AnalyticsService
+from app.services.telegram_analytics_commands import TelegramAnalyticsCommands
 
 log = logging.getLogger("main")
 
@@ -67,6 +69,7 @@ def main():
         http=http,
         token=cfg.telegram.token,
         chat_id=cfg.telegram.chat_id,
+        admin_chat_id=cfg.telegram.admin_chat_id,
     )
     fmt = PostFormatter(include_source=cfg.posting.include_source_name)
     # if cfg.translate.enabled:
@@ -92,6 +95,9 @@ def main():
         default_prompt=cfg.llm.wrap_prompt,
     )
 
+    analytics_service = AnalyticsService(cfg=cfg, repo=repo, tg=tg)
+    analytics_commands = TelegramAnalyticsCommands(repo=repo, tg=tg, analytics_service=analytics_service)
+
     pipeline = NewsPipeline(
         cfg=cfg,
         repo=repo,
@@ -115,6 +121,16 @@ def main():
             pipeline.run_once()
         except Exception as ex:
             log.exception("Run failed: %s", ex)
+
+        try:
+            analytics_service.maybe_send_daily_report()
+        except Exception as ex:
+            log.exception("Analytics report failed: %s", ex)
+
+        try:
+            analytics_commands.poll_once()
+        except Exception as ex:
+            log.exception("Telegram command polling failed: %s", ex)
 
         dt = time.time() - t0
         sleep_for = max(1, every - dt)

@@ -15,6 +15,7 @@ def utc_now_iso() -> str:
 
 
 SCHEMA_V4 = """
+
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
@@ -85,6 +86,17 @@ CREATE TABLE IF NOT EXISTS market_wrap_posts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_wrap_name_posted ON market_wrap_posts(wrap_name, posted_at_utc);
+
+CREATE TABLE IF NOT EXISTS analytics_reports (
+    day_local TEXT PRIMARY KEY,
+    posted_at_utc TEXT NOT NULL,
+    post_text TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NULL
+);
 """
 
 DESIRED_COLS = [
@@ -421,3 +433,163 @@ class SqliteNewsRepository:
             (day_utc,),
         ).fetchall()
         return [(r["post_text"] or "").strip() for r in rows if (r["post_text"] or "").strip()]
+
+
+    def analytics_report_exists(self, day_local: str) -> bool:
+        con = self._connect()
+        return con.execute("SELECT 1 FROM analytics_reports WHERE day_local=?", (day_local,)).fetchone() is not None
+
+    def save_analytics_report(self, day_local: str, post_text: str) -> None:
+        con = self._connect()
+        con.execute(
+            "INSERT OR REPLACE INTO analytics_reports(day_local, posted_at_utc, post_text) VALUES (?, ?, ?)",
+            (day_local, utc_now_iso(), post_text),
+        )
+        con.commit()
+
+    def set_bot_state(self, key: str, value: str) -> None:
+        con = self._connect()
+        con.execute(
+            "INSERT INTO bot_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+        con.commit()
+
+    def get_bot_state(self, key: str, default: str | None = None) -> str | None:
+        con = self._connect()
+        row = con.execute("SELECT value FROM bot_state WHERE key=?", (key,)).fetchone()
+        if not row:
+            return default
+        return row["value"] if row["value"] is not None else default
+
+    def get_bot_state_int(self, key: str, default: int = 0) -> int:
+        val = self.get_bot_state(key, None)
+        try:
+            return int(val) if val is not None else int(default)
+        except Exception:
+            return int(default)
+
+    def _utc_range_for_local_day(self, day_local: str, tz_name: str) -> tuple[str, str]:
+        from datetime import datetime, timedelta, timezone
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        start_local = datetime.fromisoformat(day_local).replace(tzinfo=tz)
+        end_local = start_local + timedelta(days=1)
+        start_utc = start_local.astimezone(timezone.utc).isoformat(timespec="seconds")
+        end_utc = end_local.astimezone(timezone.utc).isoformat(timespec="seconds")
+        return start_utc, end_utc
+
+    def get_analytics_snapshot(self, day_local: str, tz_name: str) -> Dict[str, int]:
+        con = self._connect()
+        start_utc, end_utc = self._utc_range_for_local_day(day_local, tz_name)
+
+        row = con.execute(
+            "SELECT COUNT(*) AS c FROM news_items WHERE scored_at_utc IS NOT NULL AND scored_at_utc >= ? AND scored_at_utc < ?",
+            (start_utc, end_utc),
+        ).fetchone()
+        scored = int(row["c"] or 0) if row else 0
+
+        row = con.execute(
+            "SELECT COUNT(*) AS c FROM news_items WHERE status='posted' AND posted_at_utc IS NOT NULL AND posted_at_utc >= ? AND posted_at_utc < ?",
+            (start_utc, end_utc),
+        ).fetchone()
+        posted_news = int(row["c"] or 0) if row else 0
+
+        row = con.execute(
+            "SELECT COUNT(*) AS c FROM market_wrap_posts WHERE posted_at_utc >= ? AND posted_at_utc < ?",
+            (start_utc, end_utc),
+        ).fetchone()
+        posted_wraps = int(row["c"] or 0) if row else 0
+
+        total_news = con.execute("SELECT COUNT(*) AS c FROM news_items WHERE status='posted'").fetchone()
+        total_wraps = con.execute("SELECT COUNT(*) AS c FROM market_wrap_posts").fetchone()
+
+        return {
+            'posts_today': posted_news + posted_wraps,
+            'news_scored_today': scored,
+            'total_posts_all_time': int(total_news["c"] or 0) + int(total_wraps["c"] or 0),
+        }
+
+    def export_table_to_csv(self, table_name: str, out_path: str) -> None:
+        import csv
+
+        allowed = {'news_items', 'market_wrap_posts'}
+        if table_name not in allowed:
+            raise ValueError(f'Unsupported export table: {table_name}')
+
+        con = self._connect()
+        rows = con.execute(f'SELECT * FROM {table_name}').fetchall()
+        cols = [r[1] for r in con.execute(f'PRAGMA table_info({table_name})').fetchall()]
+        os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+        with open(out_path, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(cols)
+            for row in rows:
+                writer.writerow([row[c] for c in cols])
+
+    def get_post_counts_by_day(self, days: int, tz_name: str) -> List[Dict[str, Any]]:
+        from collections import OrderedDict
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        now_local = datetime.now(tz)
+        base = OrderedDict()
+        for i in range(days - 1, -1, -1):
+            day = (now_local - timedelta(days=i)).date().isoformat()
+            base[day] = 0
+
+        start_day = next(iter(base.keys()))
+        start_utc, _ = self._utc_range_for_local_day(start_day, tz_name)
+        con = self._connect()
+        rows = con.execute(
+            """
+            SELECT posted_at_utc AS ts FROM news_items WHERE status='posted' AND posted_at_utc IS NOT NULL AND posted_at_utc >= ?
+            UNION ALL
+            SELECT posted_at_utc AS ts FROM market_wrap_posts WHERE posted_at_utc IS NOT NULL AND posted_at_utc >= ?
+            """,
+            (start_utc, start_utc),
+        ).fetchall()
+        for row in rows:
+            try:
+                day = datetime.fromisoformat(row['ts']).astimezone(tz).date().isoformat()
+            except Exception:
+                continue
+            if day in base:
+                base[day] += 1
+        return [{'day': k, 'posts': v} for k, v in base.items()]
+
+    def get_hashtag_post_counts(self, days: int, tz_name: str, wrap_hashtag_by_name: Dict[str, str]) -> List[Dict[str, Any]]:
+        from collections import defaultdict
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(tz_name)
+        now_local = datetime.now(tz)
+        start_day = (now_local - timedelta(days=days - 1)).date().isoformat()
+        start_utc, _ = self._utc_range_for_local_day(start_day, tz_name)
+        con = self._connect()
+        counts = defaultdict(int)
+
+        rows = con.execute(
+            """
+            SELECT COALESCE(c.hashtag, '#інше') AS hashtag
+            FROM news_items ni
+            LEFT JOIN categories c ON c.id = ni.category_id
+            WHERE ni.status='posted' AND ni.posted_at_utc IS NOT NULL AND ni.posted_at_utc >= ?
+            """,
+            (start_utc,),
+        ).fetchall()
+        for row in rows:
+            counts[str(row['hashtag'] or '#інше')] += 1
+
+        rows = con.execute(
+            "SELECT wrap_name FROM market_wrap_posts WHERE posted_at_utc IS NOT NULL AND posted_at_utc >= ?",
+            (start_utc,),
+        ).fetchall()
+        for row in rows:
+            counts[str(wrap_hashtag_by_name.get(str(row['wrap_name'] or ''), '#інше'))] += 1
+
+        return [
+            {'hashtag': tag, 'posts': counts[tag]}
+            for tag in sorted(counts.keys(), key=lambda x: (-counts[x], x))
+        ]

@@ -107,7 +107,7 @@ class NewsPipeline:
             if should_post and wrap_rule and requested_mode == "wrap_candidate":
                 effective_mode = "wrap_candidate"
                 status_override = "pending_wrap"
-                wrap_name = getattr(wrap_rule, "name", None)
+                wrap_name = getattr(wrap_rule, "key", None)
             elif not should_post and requested_mode != "drop":
                 effective_mode = "digest"
 
@@ -279,7 +279,7 @@ class NewsPipeline:
         for rule in self.wrap_rules:
             if posted >= limit:
                 break
-            last_posted = self.repo.get_last_wrap_posted_at(rule.name)
+            last_posted = self.repo.get_last_wrap_posted_at(rule.key)
             if last_posted:
                 try:
                     last_dt = datetime.fromisoformat(last_posted)
@@ -287,14 +287,14 @@ class NewsPipeline:
                         continue
                 except Exception:
                     pass
-            rows = self.repo.pick_wrap_candidates(wrap_name=rule.name, lookback_hours=int(rule.lookback_hours), limit=12)
+            rows = self.repo.pick_wrap_candidates(wrap_name=rule.key, lookback_hours=int(rule.lookback_hours), limit=12)
             if len(rows) < int(rule.min_items):
                 continue
             sources = {str(r["source"]) for r in rows}
             if len(sources) < int(rule.min_sources):
                 continue
             items = [dict(r) for r in rows]
-            decision = self.wrapmaker.make(wrap_name=rule.name, items=items, prompt_template=getattr(rule, "prompt_template", ""))
+            decision = self.wrapmaker.make(wrap_name=rule.key, items=items, prompt_template=getattr(rule, "prompt_template", ""))
             if not decision or not decision.post_text.strip():
                 continue
             hashtag = self._hashtag_for_slug(getattr(rule, "hashtag_slug", "") or "other")
@@ -309,7 +309,7 @@ class NewsPipeline:
             if not ok:
                 break
             item_hashes = [str(r["item_hash"]) for r in rows]
-            wrap_post_id = self.repo.save_wrap_post(rule.name, item_hashes=item_hashes, source_count=len(sources), post_text=decision.post_text.strip())
+            wrap_post_id = self.repo.save_wrap_post(rule.key, item_hashes=item_hashes, source_count=len(sources), post_text=decision.post_text.strip())
             self.repo.mark_wrapped(item_hashes=item_hashes, wrap_post_id=wrap_post_id)
             posted += 1
             time.sleep(self.cfg.app.sleep_between_posts_sec)

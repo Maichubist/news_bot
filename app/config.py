@@ -16,6 +16,7 @@ def _req(d: Dict[str, Any], key: str):
 class TelegramCfg:
     token: str
     chat_id: int
+    admin_chat_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +126,16 @@ class TranslateCfg:
     max_chars_summary: int = 350
 
 
+
+
+@dataclass(frozen=True)
+class AnalyticsCfg:
+    enabled: bool = True
+    daily_report_enabled: bool = True
+    commands_enabled: bool = True
+    report_hour_local: int = 22
+    timezone: str = "Europe/Zaporozhye"
+
 @dataclass(frozen=True)
 class AppConfig:
     telegram: TelegramCfg
@@ -141,6 +152,7 @@ class AppConfig:
     images: ImagesCfg
     llm: LlmCfg
     filters: FiltersCfg
+    analytics: AnalyticsCfg
 
     @staticmethod
     def load(path: str = "config.yaml") -> "AppConfig":
@@ -167,6 +179,7 @@ class AppConfig:
         images = raw.get("images", {})
         llm = raw.get("llm", {})
         filt = raw.get("filters", {})
+        analytics = raw.get("analytics", {})
 
         tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
         oa_key = os.getenv("OPENAI_API_KEY")
@@ -315,6 +328,11 @@ class AppConfig:
             telegram=TelegramCfg(
                 token=str(tg_token),
                 chat_id=int(_req(tg, "chat_id")),
+                admin_chat_id=(
+                    int(os.getenv("TELEGRAM_ADMIN_CHAT_ID"))
+                    if os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+                    else (int(tg.get("admin_chat_id")) if tg.get("admin_chat_id") not in (None, "") else None)
+                ),
             ),
             openai=OpenAICfg(
                 api_key=str(oa_key),
@@ -363,5 +381,12 @@ class AppConfig:
                 deny_title_regex=_as_list(filt.get("deny_title_regex")),
                 deny_url_regex=_as_list(filt.get("deny_url_regex")),
                 deny_summary_regex=_as_list(filt.get("deny_summary_regex")),
+            ),
+            analytics=AnalyticsCfg(
+                enabled=bool(analytics.get("enabled", True)),
+                daily_report_enabled=bool(analytics.get("daily_report_enabled", True)),
+                commands_enabled=bool(analytics.get("commands_enabled", True)),
+                report_hour_local=int(analytics.get("report_hour_local", 22)),
+                timezone=str(analytics.get("timezone", "Europe/Zaporozhye")),
             ),
         )

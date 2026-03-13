@@ -1,5 +1,6 @@
 telegram:
   chat_id: -1003750698363
+  admin_chat_id: 404237030
 
 openai:
   model: "text-embedding-3-small"
@@ -211,4 +212,11 @@ monitor:
 translate:
   enabled: false
   model: "gpt-4o-mini"
-  max_chars_summary: 350
+  max_chars_summary: 350\
+
+analytics:
+  enabled: true
+  daily_report_enabled: true
+  commands_enabled: true
+  report_hour_local: 22
+  timezone: "Europe/Zaporozhye"
