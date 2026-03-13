@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger("digest.openai")
 
@@ -19,11 +19,12 @@ class OpenAIDailyDigestMaker:
     takes list of posted texts and produces a readable daily digest.
     """
 
-    def __init__(self, http, api_key: str, model: str = "gpt-4o-mini", prompt: str | None = None):
+    def __init__(self, http, api_key: str, model: str = "gpt-4o-mini", prompt: str | None = None, prompt_provider: Callable[[str], str] | None = None):
         self.http = http
         self.api_key = api_key
         self.model = model
         self.prompt = (prompt or "").strip()
+        self.prompt_provider = prompt_provider
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -41,8 +42,9 @@ class OpenAIDailyDigestMaker:
 
         joined = "\n\n---\n\n".join(posts)
 
-        if self.prompt:
-            prompt = self.prompt.format(day_label=day_label, posts=joined)
+        active_prompt = self.prompt_provider("digest_prompt") if self.prompt_provider else self.prompt
+        if active_prompt:
+            prompt = active_prompt.format(day_label=day_label, posts=joined)
         else:
             prompt = (
                 "Ти редактор-аналітик щоденного Telegram-дайджесту про геополітику та економіку.\n"

@@ -65,6 +65,7 @@ class WrapRuleCfg:
     source_label: str = "Topic Wrap"
     hashtag_slug: str = "other"
     prompt_template: str = ""
+    prompt_template_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ class AppCfg:
 @dataclass(frozen=True)
 class MonitorCfg:
     every_seconds: int = 120
+    command_poll_seconds: int = 2
 
 
 @dataclass(frozen=True)
@@ -162,7 +164,10 @@ class AppConfig:
         mon = raw.get("monitor", {})
         tr = raw.get("translate", {})
 
-        monitor_cfg = MonitorCfg(every_seconds=int(mon.get("every_seconds", 120)))
+        monitor_cfg = MonitorCfg(
+            every_seconds=int(mon.get("every_seconds", 120)),
+            command_poll_seconds=int(mon.get("command_poll_seconds", 2)),
+        )
         translate_cfg = TranslateCfg(
             enabled=bool(tr.get("enabled", True)),
             model=str(tr.get("model", "gpt-5-mini")),
@@ -238,6 +243,20 @@ class AppConfig:
             tech_wrap_prompt=str(llm.get("tech_wrap_prompt", "")),
         )
 
+        def _resolve_prompt_key(value: Any, rule_key: str = "") -> str:
+            key = str(value or "").strip()
+            if key and hasattr(llm_cfg, key):
+                return key
+
+            rk = (rule_key or "").lower()
+            if rk in ("economy_wrap", "economy", "market_wrap", "market"):
+                return "market_wrap_prompt"
+            if rk in ("geopolitics_wrap", "geopolitics", "geopolitical_wrap", "war_wrap", "politics_wrap"):
+                return "geopolitical_wrap_prompt"
+            if rk in ("technology_wrap", "technology", "tech_wrap", "tech", "science_wrap"):
+                return "tech_wrap_prompt"
+            return "wrap_prompt"
+
         def _resolve_prompt_template(value: Any, rule_key: str = "") -> str:
             key = str(value or "").strip()
             if key:
@@ -245,7 +264,6 @@ class AppConfig:
                     return str(getattr(llm_cfg, key) or "").strip()
                 return key
 
-            # Якщо prompt_template не задано, підбираємо найкращий дефолт
             rk = (rule_key or "").lower()
             if rk in ("economy_wrap", "economy", "market_wrap", "market"):
                 return str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
@@ -281,6 +299,7 @@ class AppConfig:
                         source_label=str(item.get("source_label") or title).strip(),
                         hashtag_slug=str(item.get("hashtag_slug") or "other").strip() or "other",
                         prompt_template=_resolve_prompt_template(item.get("prompt_template"), key),
+                        prompt_template_key=_resolve_prompt_key(item.get("prompt_template"), key),
                     )
                 )
 
@@ -297,6 +316,7 @@ class AppConfig:
                     source_label="Market Wrap",
                     hashtag_slug="economy",
                     prompt_template=str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                    prompt_template_key="market_wrap_prompt",
                 ),
                 WrapRuleCfg(
                     key="geopolitics_wrap",
@@ -309,6 +329,7 @@ class AppConfig:
                     source_label="Geopolitics Wrap",
                     hashtag_slug="war",
                     prompt_template=str(llm_cfg.geopolitical_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                    prompt_template_key="geopolitical_wrap_prompt",
                 ),
                 WrapRuleCfg(
                     key="technology_wrap",
@@ -321,6 +342,7 @@ class AppConfig:
                     source_label="Tech Wrap",
                     hashtag_slug="technology",
                     prompt_template=str(llm_cfg.tech_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
+                    prompt_template_key="tech_wrap_prompt",
                 ),
             ]
 

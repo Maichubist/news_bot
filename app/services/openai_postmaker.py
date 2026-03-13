@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger("editor.openai")
 
@@ -24,12 +24,13 @@ class PostDecision:
 
 
 class OpenAINewsPostMaker:
-    def __init__(self, http, api_key: str, model: str, prompt: str | None = None, categories: Optional[List[Dict[str, str]]] = None):
+    def __init__(self, http, api_key: str, model: str, prompt: str | None = None, categories: Optional[List[Dict[str, str]]] = None, prompt_provider: Callable[[str], str] | None = None):
         self.http = http
         self.api_key = api_key
         self.model = model
         self.prompt = (prompt or "").strip()
         self.categories = categories or []
+        self.prompt_provider = prompt_provider
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -43,7 +44,8 @@ class OpenAINewsPostMaker:
             news_text += "\n\n" + summary.strip()
         news_text += f"\n\nДжерело: {source}\nURL: {url}"
 
-        prompt = self.prompt.format(news_text=news_text)
+        prompt_template = self.prompt_provider("post_prompt") if self.prompt_provider else self.prompt
+        prompt = (prompt_template or self.prompt).format(news_text=news_text)
         if self.categories:
             cats = ", ".join([f"{c['slug']} ({c['title']})" for c in self.categories if c.get("slug") and c.get("title")])
             prompt += "\n\nОбери category лише зі списку: " + cats + "."

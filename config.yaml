@@ -208,6 +208,7 @@ app:
 
 monitor:
   every_seconds: 120
+  command_poll_seconds: 2
 
 translate:
   enabled: false

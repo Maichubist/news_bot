@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import html
+import os
 import re
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
 
 log = logging.getLogger("telegram.client")
 
@@ -53,6 +54,30 @@ class TelegramClient:
         else:
             return f"<b>{title}</b>"
 
+
+    def _split_text(self, text: str, max_len: int = 3500) -> List[str]:
+        cleaned = (text or "").strip()
+        if len(cleaned) <= max_len:
+            return [cleaned]
+
+        parts: List[str] = []
+        current = ""
+        for block in cleaned.split("\n\n"):
+            candidate = block if not current else current + "\n\n" + block
+            if len(candidate) <= max_len:
+                current = candidate
+                continue
+            if current:
+                parts.append(current)
+                current = ""
+            while len(block) > max_len:
+                parts.append(block[:max_len])
+                block = block[max_len:]
+            current = block
+        if current:
+            parts.append(current)
+        return parts or [cleaned]
+
     def send_message_with_id(
         self,
         text: str,
@@ -62,38 +87,41 @@ class TelegramClient:
 
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
 
-        formatted_text = self._format_message(text)
+        first_msg_id = None
+        for chunk in self._split_text(text):
+            formatted_text = self._format_message(chunk)
+            payload = {
+                "chat_id": chat_id if chat_id is not None else self.chat_id,
+                "text": formatted_text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": disable_preview,
+            }
 
-        payload = {
-            "chat_id": chat_id if chat_id is not None else self.chat_id,
-            "text": formatted_text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": disable_preview,
-        }
+            try:
+                r = self.http.post(url, json=payload)
+            except Exception:
+                log.exception("Telegram request crashed")
+                return False, first_msg_id
 
-        try:
-            r = self.http.post(url, json=payload)
-        except Exception:
-            log.exception("Telegram request crashed")
-            return False, None
+            log.info("Sending TG message len=%d", len(chunk))
 
-        log.info("Sending TG message len=%d", len(text))
+            if not r.ok:
+                log.warning(
+                    "Telegram error: %s %s",
+                    r.status_code,
+                    (r.text or "")[:800],
+                )
+                return False, first_msg_id
 
-        if not r.ok:
-            log.warning(
-                "Telegram error: %s %s",
-                r.status_code,
-                (r.text or "")[:800],
-            )
-            return False, None
+            try:
+                data = r.json()
+                msg_id = data.get("result", {}).get("message_id")
+                if first_msg_id is None:
+                    first_msg_id = msg_id
+            except Exception:
+                pass
 
-        try:
-            data = r.json()
-            msg_id = data.get("result", {}).get("message_id")
-        except Exception:
-            msg_id = None
-
-        return True, msg_id
+        return True, first_msg_id
 
     def send_photo_with_id(
         self,
@@ -163,7 +191,7 @@ class TelegramClient:
             "caption": caption or "",
         }
         with open(path, 'rb') as f:
-            files = {"document": (path.split('/')[-1], f.read())}
+            files = {"document": (os.path.basename(path), f.read())}
         try:
             r = self.http.post(url, data=data, files=files)
         except Exception:

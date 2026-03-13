@@ -13,7 +13,7 @@ log = logging.getLogger("services.pipeline")
 
 
 class NewsPipeline:
-    def __init__(self, cfg, repo, rss, exact, embedder, semantic, tg, formatter, postmaker, digestmaker, wrapmaker=None):
+    def __init__(self, cfg, repo, rss, exact, embedder, semantic, tg, formatter, postmaker, digestmaker, wrapmaker=None, prompt_manager=None):
         self.cfg = cfg
         self.repo = repo
         self.rss = rss
@@ -25,6 +25,7 @@ class NewsPipeline:
         self.postmaker = postmaker
         self.digestmaker = digestmaker
         self.wrapmaker = wrapmaker
+        self.prompt_manager = prompt_manager
 
         self.score_threshold = float(getattr(cfg, "score_threshold", 0.72))
         self.digest_hour_local = int(getattr(cfg, "digest_hour_local", 21))
@@ -294,7 +295,7 @@ class NewsPipeline:
             if len(sources) < int(rule.min_sources):
                 continue
             items = [dict(r) for r in rows]
-            decision = self.wrapmaker.make(wrap_name=rule.key, items=items, prompt_template=getattr(rule, "prompt_template", ""))
+            decision = self.wrapmaker.make(wrap_name=rule.key, items=items, prompt_template=self._prompt_template_for_wrap_rule(rule))
             if not decision or not decision.post_text.strip():
                 continue
             hashtag = self._hashtag_for_slug(getattr(rule, "hashtag_slug", "") or "other")
@@ -314,6 +315,16 @@ class NewsPipeline:
             posted += 1
             time.sleep(self.cfg.app.sleep_between_posts_sec)
         return posted
+
+
+    def _prompt_template_for_wrap_rule(self, rule) -> str:
+        key = (getattr(rule, "prompt_template_key", "") or "").strip()
+        if key and self.prompt_manager is not None:
+            active = (self.prompt_manager.get(key) or "").strip()
+            if active:
+                return active
+        return (getattr(rule, "prompt_template", "") or "").strip()
+
 
     def maybe_post_daily_digest(self) -> None:
         now_local = datetime.now()

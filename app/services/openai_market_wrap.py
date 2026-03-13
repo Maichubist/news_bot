@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 log = logging.getLogger("editor.wrap")
 
@@ -14,11 +14,12 @@ class WrapDecision:
 
 
 class OpenAIMarketWrapMaker:
-    def __init__(self, http, api_key: str, model: str, default_prompt: str = ""):
+    def __init__(self, http, api_key: str, model: str, default_prompt: str = "", prompt_provider: Callable[[str], str] | None = None):
         self.http = http
         self.api_key = api_key
         self.model = model
         self.default_prompt = (default_prompt or "").strip()
+        self.prompt_provider = prompt_provider
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -38,7 +39,8 @@ class OpenAIMarketWrapMaker:
             line += f"\nURL: {it.get('link','').strip()}"
             lines.append(line)
 
-        prompt = (prompt_template or self.default_prompt or "").format(
+        base_prompt = self.prompt_provider("wrap_prompt") if self.prompt_provider else self.default_prompt
+        prompt = (prompt_template or base_prompt or self.default_prompt or "").format(
             wrap_name=wrap_name,
             items="\n\n".join(lines),
         )

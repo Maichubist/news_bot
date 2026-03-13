@@ -469,6 +469,20 @@ class SqliteNewsRepository:
         except Exception:
             return int(default)
 
+    def delete_bot_state(self, key: str) -> None:
+        con = self._connect()
+        con.execute("DELETE FROM bot_state WHERE key=?", (key,))
+        con.commit()
+
+    def set_prompt_override(self, key: str, value: str) -> None:
+        self.set_bot_state(f"prompt_override:{key}", value)
+
+    def get_prompt_override(self, key: str, default: str | None = None) -> str | None:
+        return self.get_bot_state(f"prompt_override:{key}", default)
+
+    def delete_prompt_override(self, key: str) -> None:
+        self.delete_bot_state(f"prompt_override:{key}")
+
     def _utc_range_for_local_day(self, day_local: str, tz_name: str) -> tuple[str, str]:
         from datetime import datetime, timedelta, timezone
         from zoneinfo import ZoneInfo
