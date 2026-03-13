@@ -1,28 +1,85 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any
 import os
 import yaml
 
 
-def _req(d: Dict[str, Any], key: str):
+def _req(d: dict[str, Any], key: str, section: str = "") -> Any:
     if key not in d or d[key] in (None, ""):
-        raise ValueError(f"Missing required config key: {key}")
+        prefix = f"{section}." if section else ""
+        raise ValueError(f"Missing required config key: {prefix}{key}")
     return d[key]
+
+
+def _as_dict(v: Any, name: str) -> dict[str, Any]:
+    if not isinstance(v, dict):
+        raise ValueError(f"Config section '{name}' must be a mapping/object")
+    return v
+
+
+def _as_list(v: Any, name: str) -> list[Any]:
+    if not isinstance(v, list):
+        raise ValueError(f"Config key '{name}' must be a list")
+    return v
+
+
+def _as_str_list(v: Any) -> list[str]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    if isinstance(v, list):
+        out: list[str] = []
+        for x in v:
+            s = str(x).strip()
+            if s:
+                out.append(s)
+        return out
+    raise ValueError("Expected string or list of strings")
+
+
+def _as_bool(v: Any, name: str) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in {"true", "1", "yes", "y", "on"}:
+            return True
+        if s in {"false", "0", "no", "n", "off"}:
+            return False
+    if isinstance(v, (int, float)):
+        return bool(v)
+    raise ValueError(f"Config key '{name}' must be a boolean")
+
+
+def _as_int(v: Any, name: str) -> int:
+    try:
+        return int(v)
+    except Exception as ex:
+        raise ValueError(f"Config key '{name}' must be an integer, got: {v!r}") from ex
+
+
+def _as_float(v: Any, name: str) -> float:
+    try:
+        return float(v)
+    except Exception as ex:
+        raise ValueError(f"Config key '{name}' must be a float, got: {v!r}") from ex
 
 
 @dataclass(frozen=True)
 class TelegramCfg:
     token: str
     chat_id: int
-    admin_chat_id: int | None = None
+    admin_chat_id: int | None
 
 
 @dataclass(frozen=True)
 class OpenAICfg:
     api_key: str
-    model: str = "text-embedding-3-small"
+    model: str
 
 
 @dataclass(frozen=True)
@@ -36,114 +93,112 @@ class CategoryCfg:
 class SourceCfg:
     name: str
     url: str
-    deny_title_regex: List[str] | None = None
-    deny_url_regex: List[str] | None = None
+    deny_title_regex: list[str]
+    deny_url_regex: list[str]
 
 
 @dataclass(frozen=True)
 class FiltersCfg:
-    deny_title_regex: List[str]
-    deny_url_regex: List[str]
-    deny_summary_regex: List[str]
+    deny_title_regex: list[str]
+    deny_url_regex: list[str]
+    deny_summary_regex: list[str]
 
 
 @dataclass(frozen=True)
 class DbCfg:
-    path: str = "data/news.db"
-    keep_days: int = 14
+    path: str
+    keep_days: int
 
 
 @dataclass(frozen=True)
 class WrapRuleCfg:
     key: str
     title: str
-    categories: List[str]
-    min_items: int = 3
-    lookback_hours: int = 6
-    cooldown_minutes: int = 90
-    min_sources: int = 2
-    source_label: str = "Topic Wrap"
-    hashtag_slug: str = "other"
-    prompt_template: str = ""
-    prompt_template_key: str = ""
+    categories: list[str]
+    min_items: int
+    lookback_hours: int
+    cooldown_minutes: int
+    min_sources: int
+    source_label: str
+    hashtag_slug: str
+    prompt_template_key: str
 
 
 @dataclass(frozen=True)
 class PostingCfg:
-    max_posts_per_run: int = 5
-    only_last_hours: int = 24
-    include_source_name: bool = True
-    cluster_wait_minutes: int = 5
-    breaking_sources_threshold: int = 3
-    wrap_rules: List[WrapRuleCfg] | None = None
+    max_posts_per_run: int
+    only_last_hours: int
+    include_source_name: bool
+    cluster_wait_minutes: int
+    breaking_sources_threshold: int
+    wrap_rules: list[WrapRuleCfg]
 
 
 @dataclass(frozen=True)
 class ImagesCfg:
-    og_fetch: bool = True
+    og_fetch: bool
 
 
 @dataclass(frozen=True)
 class LlmCfg:
-    post_model: str = "gpt-4o-mini"
-    digest_model: str = "gpt-4o-mini"
-    wrap_model: str = "gpt-4o-mini"
-    post_prompt: str = ""
-    wrap_prompt: str = ""
-    digest_prompt: str = ""
-    market_wrap_prompt: str = ""
-    geopolitical_wrap_prompt: str = ""
-    tech_wrap_prompt: str = ""
+    post_model: str
+    digest_model: str
+    wrap_model: str
+    post_prompt: str
+    wrap_prompt: str
+    digest_prompt: str
+    market_wrap_prompt: str
+    geopolitical_wrap_prompt: str
+    tech_wrap_prompt: str
 
 
 @dataclass(frozen=True)
 class NetworkCfg:
-    timeout_sec: int = 25
-    verify: Any = "certifi"
+    timeout_sec: int
+    verify: Any
 
 
 @dataclass(frozen=True)
 class EmbeddingsCfg:
-    window_hours: int = 24
-    threshold: float = 0.90
-    require_good_summary: bool = False
+    window_hours: int
+    threshold: float
+    require_good_summary: bool
 
 
 @dataclass(frozen=True)
 class AppCfg:
-    sleep_between_posts_sec: float = 1.2
-    log_level: str = "INFO"
+    sleep_between_posts_sec: float
+    log_level: str
 
 
 @dataclass(frozen=True)
 class MonitorCfg:
-    every_seconds: int = 120
-    command_poll_seconds: int = 2
+    every_seconds: int
+    command_poll_seconds: int
 
 
 @dataclass(frozen=True)
 class TranslateCfg:
-    enabled: bool = True
-    model: str = "gpt-5-mini"
-    max_chars_summary: int = 350
-
-
+    enabled: bool
+    model: str
+    max_chars_summary: int
 
 
 @dataclass(frozen=True)
 class AnalyticsCfg:
-    enabled: bool = True
-    daily_report_enabled: bool = True
-    commands_enabled: bool = True
-    report_hour_local: int = 22
-    timezone: str = "Europe/Zaporozhye"
+    enabled: bool
+    daily_report_enabled: bool
+    commands_enabled: bool
+    report_hour_local: int
+    timezone: str
+
 
 @dataclass(frozen=True)
 class AppConfig:
     telegram: TelegramCfg
     openai: OpenAICfg
-    categories: List[CategoryCfg]
-    sources: List[SourceCfg]
+    categories: list[CategoryCfg]
+    sources: list[SourceCfg]
     db: DbCfg
     posting: PostingCfg
     network: NetworkCfg
@@ -161,254 +216,186 @@ class AppConfig:
         with open(path, "r", encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
-        mon = raw.get("monitor", {})
-        tr = raw.get("translate", {})
-
-        monitor_cfg = MonitorCfg(
-            every_seconds=int(mon.get("every_seconds", 120)),
-            command_poll_seconds=int(mon.get("command_poll_seconds", 2)),
-        )
-        translate_cfg = TranslateCfg(
-            enabled=bool(tr.get("enabled", True)),
-            model=str(tr.get("model", "gpt-5-mini")),
-            max_chars_summary=int(tr.get("max_chars_summary", 350)),
-        )
-
-        tg = raw.get("telegram", {})
-        oa = raw.get("openai", {})
-        db = raw.get("db", {})
-        posting = raw.get("posting", {})
-        network = raw.get("network", {})
-        emb = raw.get("embeddings", {})
-        app = raw.get("app", {})
-        images = raw.get("images", {})
-        llm = raw.get("llm", {})
-        filt = raw.get("filters", {})
-        analytics = raw.get("analytics", {})
+        tg = _as_dict(_req(raw, "telegram"), "telegram")
+        oa = _as_dict(_req(raw, "openai"), "openai")
+        db = _as_dict(_req(raw, "db"), "db")
+        posting = _as_dict(_req(raw, "posting"), "posting")
+        network = _as_dict(_req(raw, "network"), "network")
+        emb = _as_dict(_req(raw, "embeddings"), "embeddings")
+        app = _as_dict(_req(raw, "app"), "app")
+        monitor = _as_dict(_req(raw, "monitor"), "monitor")
+        translate = _as_dict(_req(raw, "translate"), "translate")
+        images = _as_dict(_req(raw, "images"), "images")
+        llm = _as_dict(_req(raw, "llm"), "llm")
+        filters = _as_dict(_req(raw, "filters"), "filters")
+        analytics = _as_dict(_req(raw, "analytics"), "analytics")
 
         tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
         oa_key = os.getenv("OPENAI_API_KEY")
+
         if not tg_token:
             raise ValueError("Missing TELEGRAM_TOKEN in environment/.env")
         if not oa_key:
             raise ValueError("Missing OPENAI_API_KEY in environment/.env")
 
-        cats_raw = raw.get("categories")
-        if not isinstance(cats_raw, list) or not cats_raw:
-            cats_raw = [
-                {"slug": "war", "title": "Війна", "hashtag": "#війна"},
-                {"slug": "politics", "title": "Політика", "hashtag": "#політика"},
-                {"slug": "economy", "title": "Економіка", "hashtag": "#економіка"},
-                {"slug": "technology", "title": "Технології", "hashtag": "#технології"},
-                {"slug": "business", "title": "Бізнес", "hashtag": "#бізнес"},
-                {"slug": "society", "title": "Суспільство", "hashtag": "#суспільство"},
-                {"slug": "science", "title": "Наука", "hashtag": "#наука"},
-                {"slug": "other", "title": "Інше", "hashtag": "#інше"},
-            ]
-
-        categories_cfg = [
-            CategoryCfg(
-                slug=str(c.get("slug") or "").strip(),
-                title=str(c.get("title") or "").strip(),
-                hashtag=str(c.get("hashtag") or "").strip(),
+        admin_chat_env = os.getenv("TELEGRAM_ADMIN_CHAT_ID")
+        admin_chat_id = (
+            _as_int(admin_chat_env, "TELEGRAM_ADMIN_CHAT_ID")
+            if admin_chat_env not in (None, "")
+            else (
+                _as_int(tg["admin_chat_id"], "telegram.admin_chat_id")
+                if tg.get("admin_chat_id") not in (None, "")
+                else None
             )
-            for c in cats_raw
-            if str(c.get("slug") or "").strip()
-        ]
+        )
+
+        categories_raw = _as_list(_req(raw, "categories"), "categories")
+        categories_cfg: list[CategoryCfg] = []
+        for idx, item in enumerate(categories_raw):
+            c = _as_dict(item, f"categories[{idx}]")
+            categories_cfg.append(
+                CategoryCfg(
+                    slug=str(_req(c, "slug", f"categories[{idx}]")).strip(),
+                    title=str(_req(c, "title", f"categories[{idx}]")).strip(),
+                    hashtag=str(_req(c, "hashtag", f"categories[{idx}]")).strip(),
+                )
+            )
+
         if not categories_cfg:
             raise ValueError("Config key 'categories' must be a non-empty list")
 
-        sources_raw = raw.get("sources", [])
-        if not isinstance(sources_raw, list) or not sources_raw:
+        sources_raw = _as_list(_req(raw, "sources"), "sources")
+        sources_cfg: list[SourceCfg] = []
+        for idx, item in enumerate(sources_raw):
+            s = _as_dict(item, f"sources[{idx}]")
+            sources_cfg.append(
+                SourceCfg(
+                    name=str(_req(s, "name", f"sources[{idx}]")).strip(),
+                    url=str(_req(s, "url", f"sources[{idx}]")).strip(),
+                    deny_title_regex=_as_str_list(s.get("deny_title_regex")),
+                    deny_url_regex=_as_str_list(s.get("deny_url_regex")),
+                )
+            )
+
+        if not sources_cfg:
             raise ValueError("Config key 'sources' must be a non-empty list")
 
-        def _as_list(v) -> List[str]:
-            if v is None:
-                return []
-            if isinstance(v, str):
-                return [v]
-            if isinstance(v, list):
-                return [str(x) for x in v if str(x).strip()]
-            return []
-
         llm_cfg = LlmCfg(
-            post_model=str(llm.get("post_model", "gpt-4o-mini")),
-            digest_model=str(llm.get("digest_model", "gpt-4o-mini")),
-            wrap_model=str(llm.get("wrap_model", llm.get("market_wrap_model", "gpt-4o-mini"))),
-            post_prompt=str(llm.get("post_prompt", "")),
-            wrap_prompt=str(llm.get("wrap_prompt", "")),
-            digest_prompt=str(llm.get("digest_prompt", "")),
+            post_model=str(_req(llm, "post_model", "llm")).strip(),
+            digest_model=str(_req(llm, "digest_model", "llm")).strip(),
+            wrap_model=str(_req(llm, "wrap_model", "llm")).strip(),
+            post_prompt=str(_req(llm, "post_prompt", "llm")),
+            wrap_prompt=str(_req(llm, "wrap_prompt", "llm")),
+            digest_prompt=str(_req(llm, "digest_prompt", "llm")),
             market_wrap_prompt=str(llm.get("market_wrap_prompt", "")),
             geopolitical_wrap_prompt=str(llm.get("geopolitical_wrap_prompt", "")),
             tech_wrap_prompt=str(llm.get("tech_wrap_prompt", "")),
         )
 
-        def _resolve_prompt_key(value: Any, rule_key: str = "") -> str:
-            key = str(value or "").strip()
-            if key and hasattr(llm_cfg, key):
-                return key
+        prompt_key_by_wrap: dict[str, str] = {
+            "economy_wrap": "market_wrap_prompt",
+            "economy": "market_wrap_prompt",
+            "market_wrap": "market_wrap_prompt",
+            "market": "market_wrap_prompt",
+            "geopolitics_wrap": "geopolitical_wrap_prompt",
+            "geopolitics": "geopolitical_wrap_prompt",
+            "geopolitical_wrap": "geopolitical_wrap_prompt",
+            "war_wrap": "geopolitical_wrap_prompt",
+            "politics_wrap": "geopolitical_wrap_prompt",
+            "technology_wrap": "tech_wrap_prompt",
+            "technology": "tech_wrap_prompt",
+            "tech_wrap": "tech_wrap_prompt",
+            "tech": "tech_wrap_prompt",
+            "science_wrap": "tech_wrap_prompt",
+        }
 
-            rk = (rule_key or "").lower()
-            if rk in ("economy_wrap", "economy", "market_wrap", "market"):
-                return "market_wrap_prompt"
-            if rk in ("geopolitics_wrap", "geopolitics", "geopolitical_wrap", "war_wrap", "politics_wrap"):
-                return "geopolitical_wrap_prompt"
-            if rk in ("technology_wrap", "technology", "tech_wrap", "tech", "science_wrap"):
-                return "tech_wrap_prompt"
-            return "wrap_prompt"
+        wrap_rules_raw = _as_list(_req(posting, "wrap_rules", "posting"), "posting.wrap_rules")
+        wrap_rules_cfg: list[WrapRuleCfg] = []
+        for idx, item in enumerate(wrap_rules_raw):
+            wr = _as_dict(item, f"posting.wrap_rules[{idx}]")
+            key = str(wr.get("key") or wr.get("name") or "").strip()
+            if not key:
+                raise ValueError(f"Missing required config key: posting.wrap_rules[{idx}].key")
 
-        def _resolve_prompt_template(value: Any, rule_key: str = "") -> str:
-            key = str(value or "").strip()
-            if key:
-                if hasattr(llm_cfg, key):
-                    return str(getattr(llm_cfg, key) or "").strip()
-                return key
+            prompt_template_key = str(wr.get("prompt_template_key") or "").strip()
+            if not prompt_template_key:
+                prompt_template_key = prompt_key_by_wrap.get(key.lower(), "wrap_prompt")
 
-            rk = (rule_key or "").lower()
-            if rk in ("economy_wrap", "economy", "market_wrap", "market"):
-                return str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
-            if rk in ("geopolitics_wrap", "geopolitics", "geopolitical_wrap", "war_wrap", "politics_wrap"):
-                return str(llm_cfg.geopolitical_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
-            if rk in ("technology_wrap", "technology", "tech_wrap", "tech", "science_wrap"):
-                return str(llm_cfg.tech_wrap_prompt or llm_cfg.wrap_prompt or "").strip()
-
-            return str(llm_cfg.wrap_prompt or "").strip()
-
-        wrap_rules_raw = posting.get("wrap_rules")
-        wrap_rules: List[WrapRuleCfg] = []
-        if isinstance(wrap_rules_raw, list) and wrap_rules_raw:
-            for item in wrap_rules_raw:
-                if not isinstance(item, dict):
-                    continue
-
-                key = str(item.get("key") or item.get("name") or "").strip()
-                if not key:
-                    continue
-
-                title = str(item.get("title") or key).strip()
-
-                wrap_rules.append(
-                    WrapRuleCfg(
-                        key=key,
-                        title=title,
-                        categories=_as_list(item.get("categories")),
-                        min_items=int(item.get("min_items", 3)),
-                        lookback_hours=int(item.get("lookback_hours", 6)),
-                        cooldown_minutes=int(item.get("cooldown_minutes", 90)),
-                        min_sources=int(item.get("min_sources", 2)),
-                        source_label=str(item.get("source_label") or title).strip(),
-                        hashtag_slug=str(item.get("hashtag_slug") or "other").strip() or "other",
-                        prompt_template=_resolve_prompt_template(item.get("prompt_template"), key),
-                        prompt_template_key=_resolve_prompt_key(item.get("prompt_template"), key),
-                    )
+            wrap_rules_cfg.append(
+                WrapRuleCfg(
+                    key=key,
+                    title=str(wr.get("title") or key).strip(),
+                    categories=_as_str_list(_req(wr, "categories", f"posting.wrap_rules[{idx}]")),
+                    min_items=_as_int(_req(wr, "min_items", f"posting.wrap_rules[{idx}]"), f"posting.wrap_rules[{idx}].min_items"),
+                    lookback_hours=_as_int(_req(wr, "lookback_hours", f"posting.wrap_rules[{idx}]"), f"posting.wrap_rules[{idx}].lookback_hours"),
+                    cooldown_minutes=_as_int(_req(wr, "cooldown_minutes", f"posting.wrap_rules[{idx}]"), f"posting.wrap_rules[{idx}].cooldown_minutes"),
+                    min_sources=_as_int(_req(wr, "min_sources", f"posting.wrap_rules[{idx}]"), f"posting.wrap_rules[{idx}].min_sources"),
+                    source_label=str(wr.get("source_label") or str(wr.get("title") or key)).strip(),
+                    hashtag_slug=str(_req(wr, "hashtag_slug", f"posting.wrap_rules[{idx}]")).strip(),
+                    prompt_template_key=prompt_template_key,
                 )
-
-        if not wrap_rules:
-            wrap_rules = [
-                WrapRuleCfg(
-                    key="economy_wrap",
-                    title="Market Wrap",
-                    categories=["economy", "business"],
-                    min_items=3,
-                    lookback_hours=6,
-                    cooldown_minutes=90,
-                    min_sources=2,
-                    source_label="Market Wrap",
-                    hashtag_slug="economy",
-                    prompt_template=str(llm_cfg.market_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
-                    prompt_template_key="market_wrap_prompt",
-                ),
-                WrapRuleCfg(
-                    key="geopolitics_wrap",
-                    title="Geopolitics Wrap",
-                    categories=["war", "politics"],
-                    min_items=3,
-                    lookback_hours=6,
-                    cooldown_minutes=120,
-                    min_sources=2,
-                    source_label="Geopolitics Wrap",
-                    hashtag_slug="war",
-                    prompt_template=str(llm_cfg.geopolitical_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
-                    prompt_template_key="geopolitical_wrap_prompt",
-                ),
-                WrapRuleCfg(
-                    key="technology_wrap",
-                    title="Tech Wrap",
-                    categories=["technology", "science"],
-                    min_items=3,
-                    lookback_hours=8,
-                    cooldown_minutes=180,
-                    min_sources=2,
-                    source_label="Tech Wrap",
-                    hashtag_slug="technology",
-                    prompt_template=str(llm_cfg.tech_wrap_prompt or llm_cfg.wrap_prompt or "").strip(),
-                    prompt_template_key="tech_wrap_prompt",
-                ),
-            ]
+            )
 
         return AppConfig(
             telegram=TelegramCfg(
                 token=str(tg_token),
-                chat_id=int(_req(tg, "chat_id")),
-                admin_chat_id=(
-                    int(os.getenv("TELEGRAM_ADMIN_CHAT_ID"))
-                    if os.getenv("TELEGRAM_ADMIN_CHAT_ID")
-                    else (int(tg.get("admin_chat_id")) if tg.get("admin_chat_id") not in (None, "") else None)
-                ),
+                chat_id=_as_int(_req(tg, "chat_id", "telegram"), "telegram.chat_id"),
+                admin_chat_id=admin_chat_id,
             ),
             openai=OpenAICfg(
                 api_key=str(oa_key),
-                model=str(oa.get("model", "text-embedding-3-small")),
+                model=str(_req(oa, "model", "openai")).strip(),
             ),
             categories=categories_cfg,
-            sources=[
-                SourceCfg(
-                    name=str(s["name"]),
-                    url=str(s["url"]),
-                    deny_title_regex=_as_list(s.get("deny_title_regex")),
-                    deny_url_regex=_as_list(s.get("deny_url_regex")),
-                )
-                for s in sources_raw
-            ],
+            sources=sources_cfg,
             db=DbCfg(
-                path=str(db.get("path", "data/news.db")),
-                keep_days=int(db.get("keep_days", 14)),
+                path=str(_req(db, "path", "db")).strip(),
+                keep_days=_as_int(_req(db, "keep_days", "db"), "db.keep_days"),
             ),
             posting=PostingCfg(
-                max_posts_per_run=int(posting.get("max_posts_per_run", 5)),
-                only_last_hours=int(posting.get("only_last_hours", 24)),
-                include_source_name=bool(posting.get("include_source_name", True)),
-                cluster_wait_minutes=int(posting.get("cluster_wait_minutes", 5)),
-                breaking_sources_threshold=int(posting.get("breaking_sources_threshold", 3)),
-                wrap_rules=wrap_rules,
+                max_posts_per_run=_as_int(_req(posting, "max_posts_per_run", "posting"), "posting.max_posts_per_run"),
+                only_last_hours=_as_int(_req(posting, "only_last_hours", "posting"), "posting.only_last_hours"),
+                include_source_name=_as_bool(_req(posting, "include_source_name", "posting"), "posting.include_source_name"),
+                cluster_wait_minutes=_as_int(_req(posting, "cluster_wait_minutes", "posting"), "posting.cluster_wait_minutes"),
+                breaking_sources_threshold=_as_int(_req(posting, "breaking_sources_threshold", "posting"), "posting.breaking_sources_threshold"),
+                wrap_rules=wrap_rules_cfg,
             ),
             network=NetworkCfg(
-                timeout_sec=int(network.get("timeout_sec", 25)),
-                verify=network.get("verify", "certifi"),
+                timeout_sec=_as_int(_req(network, "timeout_sec", "network"), "network.timeout_sec"),
+                verify=_req(network, "verify", "network"),
             ),
             embeddings=EmbeddingsCfg(
-                window_hours=int(emb.get("window_hours", 24)),
-                threshold=float(emb.get("threshold", 0.90)),
-                require_good_summary=bool(emb.get("require_good_summary", False)),
+                window_hours=_as_int(_req(emb, "window_hours", "embeddings"), "embeddings.window_hours"),
+                threshold=_as_float(_req(emb, "threshold", "embeddings"), "embeddings.threshold"),
+                require_good_summary=_as_bool(_req(emb, "require_good_summary", "embeddings"), "embeddings.require_good_summary"),
             ),
             app=AppCfg(
-                sleep_between_posts_sec=float(app.get("sleep_between_posts_sec", 1.2)),
-                log_level=str(app.get("log_level", "INFO")),
+                sleep_between_posts_sec=_as_float(_req(app, "sleep_between_posts_sec", "app"), "app.sleep_between_posts_sec"),
+                log_level=str(_req(app, "log_level", "app")).strip(),
             ),
-            monitor=monitor_cfg,
-            translate=translate_cfg,
-            images=ImagesCfg(og_fetch=bool(images.get("og_fetch", True))),
+            monitor=MonitorCfg(
+                every_seconds=_as_int(_req(monitor, "every_seconds", "monitor"), "monitor.every_seconds"),
+                command_poll_seconds=_as_int(_req(monitor, "command_poll_seconds", "monitor"), "monitor.command_poll_seconds"),
+            ),
+            translate=TranslateCfg(
+                enabled=_as_bool(_req(translate, "enabled", "translate"), "translate.enabled"),
+                model=str(_req(translate, "model", "translate")).strip(),
+                max_chars_summary=_as_int(_req(translate, "max_chars_summary", "translate"), "translate.max_chars_summary"),
+            ),
+            images=ImagesCfg(
+                og_fetch=_as_bool(_req(images, "og_fetch", "images"), "images.og_fetch"),
+            ),
             llm=llm_cfg,
             filters=FiltersCfg(
-                deny_title_regex=_as_list(filt.get("deny_title_regex")),
-                deny_url_regex=_as_list(filt.get("deny_url_regex")),
-                deny_summary_regex=_as_list(filt.get("deny_summary_regex")),
+                deny_title_regex=_as_str_list(_req(filters, "deny_title_regex", "filters")),
+                deny_url_regex=_as_str_list(_req(filters, "deny_url_regex", "filters")),
+                deny_summary_regex=_as_str_list(_req(filters, "deny_summary_regex", "filters")),
             ),
             analytics=AnalyticsCfg(
-                enabled=bool(analytics.get("enabled", True)),
-                daily_report_enabled=bool(analytics.get("daily_report_enabled", True)),
-                commands_enabled=bool(analytics.get("commands_enabled", True)),
-                report_hour_local=int(analytics.get("report_hour_local", 22)),
-                timezone=str(analytics.get("timezone", "Europe/Zaporozhye")),
+                enabled=_as_bool(_req(analytics, "enabled", "analytics"), "analytics.enabled"),
+                daily_report_enabled=_as_bool(_req(analytics, "daily_report_enabled", "analytics"), "analytics.daily_report_enabled"),
+                commands_enabled=_as_bool(_req(analytics, "commands_enabled", "analytics"), "analytics.commands_enabled"),
+                report_hour_local=_as_int(_req(analytics, "report_hour_local", "analytics"), "analytics.report_hour_local"),
+                timezone=str(_req(analytics, "timezone", "analytics")).strip(),
             ),
         )

@@ -3,7 +3,7 @@ telegram:
   admin_chat_id: 404237030
 
 openai:
-  model: "text-embedding-3-small"
+  model: text-embedding-3-small
 
 categories:
   - slug: war
@@ -32,9 +32,10 @@ categories:
     hashtag: "#інше"
 
 llm:
-  post_model: "gpt-4o-mini"
-  digest_model: "gpt-4o-mini"
-  wrap_model: "gpt-4o-mini"
+  post_model: gpt-4o-mini
+  digest_model: gpt-4o-mini
+  wrap_model: gpt-4o-mini
+
   post_prompt: |
     Ти професійний редактор українського Telegram-каналу про геополітику, економіку і технології.
 
@@ -68,6 +69,7 @@ llm:
 
     Новина:
     {news_text}
+
   wrap_prompt: |
     Ти редактор Telegram-каналу. Нижче кілька новин однієї хвилі для {wrap_name}.
     Зроби один агрегований пост українською.
@@ -81,6 +83,7 @@ llm:
 
     Новини:
     {items}
+
   digest_prompt: |
     Ти редактор-аналітик щоденного Telegram-дайджесту.
     Зроби підсумок дня: {day_label}
@@ -99,43 +102,105 @@ llm:
     Пости за день:
     {posts}
 
+  market_wrap_prompt: |
+    Ти редактор українського Telegram-каналу. Нижче кілька новин однієї ринкової хвилі для {wrap_name}.
+    Зроби один сильний агрегований пост українською.
+
+    Вимоги:
+    - 1 чіткий заголовок
+    - 2-4 короткі речення
+    - покажи головний рух ринку, компаній або макросюжет
+    - не перелічуй механічно всі новини
+    - максимум 650 символів
+    - без вигаданих фактів і зайвого пафосу
+
+    Новини:
+    {items}
+
+  geopolitical_wrap_prompt: |
+    Ти редактор українського Telegram-каналу. Нижче кілька новин однієї геополітичної хвилі для {wrap_name}.
+    Зроби один агрегований пост українською.
+
+    Вимоги:
+    - 1 сильний заголовок
+    - 2-4 короткі речення
+    - поясни спільний геополітичний зміст і наслідок
+    - не дублюй кожну новину окремо
+    - максимум 650 символів
+    - без вигаданих фактів, без води
+
+    Новини:
+    {items}
+
+  tech_wrap_prompt: |
+    Ти редактор українського Telegram-каналу. Нижче кілька новин однієї технологічної хвилі для {wrap_name}.
+    Зроби один агрегований пост українською.
+
+    Вимоги:
+    - 1 сильний заголовок
+    - 2-4 короткі речення
+    - покажи спільний технологічний тренд або зсув
+    - не повторюй кожну новину окремо
+    - максимум 650 символів
+    - без вигаданих фактів, без води
+
+    Новини:
+    {items}
+
 sources:
   - name: "Reuters World"
     url: "https://feeds.reuters.com/Reuters/worldNews"
+
   - name: "Reuters Business"
     url: "https://feeds.reuters.com/reuters/businessNews"
+
   - name: "Associated Press"
     url: "https://apnews.com/rss"
+
   - name: "CNN World"
     url: "http://rss.cnn.com/rss/edition_world.rss"
+
   - name: "Al Jazeera"
     url: "https://www.aljazeera.com/xml/rss/all.xml"
+
   - name: "The Guardian World"
     url: "https://www.theguardian.com/world/rss"
+
   - name: "Financial Times"
     url: "https://www.ft.com/rss/home"
+
   - name: "Bloomberg"
     url: "https://feeds.bloomberg.com/markets/news.rss"
     deny_url_regex:
       - '(?i)/video'
+
   - name: "CNBC"
     url: "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+
   - name: "WSJ World"
     url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
+
   - name: "TechCrunch"
     url: "https://techcrunch.com/feed/"
+
   - name: "Wired"
     url: "https://www.wired.com/feed/rss"
+
   - name: "Ars Technica"
     url: "http://feeds.arstechnica.com/arstechnica/index"
+
   - name: "Engadget"
     url: "https://www.engadget.com/rss.xml"
+
   - name: "MIT Technology Review"
     url: "https://www.technologyreview.com/feed/"
+
   - name: "VentureBeat AI"
     url: "https://venturebeat.com/category/ai/feed/"
+
   - name: "Defense News"
     url: "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml"
+
   - name: "Politico"
     url: "https://www.politico.com/rss/politics08.xml"
 
@@ -146,6 +211,7 @@ filters:
     - '(?i)\b(newsletter|subscribe|subscription)\b'
     - '(?i)\b(deals?|coupon|sale|% off|discount|promo code)\b'
     - '(?i)\b(opinion|editorial|column)\b'
+
   deny_url_regex:
     - '(?i)/video'
     - '(?i)/podcast'
@@ -154,6 +220,7 @@ filters:
     - '(?i)/deals?'
     - '(?i)/coupons?'
     - '(?i)\butm_'
+
   deny_summary_regex:
     - '(?i)\b(sponsored|advertorial|partner(ed)? content|paid post)\b'
 
@@ -163,34 +230,52 @@ posting:
   include_source_name: true
   cluster_wait_minutes: 5
   breaking_sources_threshold: 3
+
   wrap_rules:
-    - name: economy_wrap
-      categories: [economy, business]
+    - key: economy_wrap
+      title: "Market Wrap"
+      categories:
+        - economy
+        - business
       min_items: 3
       lookback_hours: 6
       cooldown_minutes: 90
       min_sources: 2
+      source_label: "Market Wrap"
       hashtag_slug: economy
-    - name: geopolitics_wrap
-      categories: [war, politics]
+      prompt_template_key: market_wrap_prompt
+
+    - key: geopolitics_wrap
+      title: "Geopolitics Wrap"
+      categories:
+        - war
+        - politics
       min_items: 3
       lookback_hours: 6
       cooldown_minutes: 120
       min_sources: 2
+      source_label: "Geopolitics Wrap"
       hashtag_slug: war
-    - name: technology_wrap
-      categories: [technology, science]
+      prompt_template_key: geopolitical_wrap_prompt
+
+    - key: technology_wrap
+      title: "Tech Wrap"
+      categories:
+        - technology
+        - science
       min_items: 3
       lookback_hours: 8
       cooldown_minutes: 180
       min_sources: 2
+      source_label: "Tech Wrap"
       hashtag_slug: technology
+      prompt_template_key: tech_wrap_prompt
 
 images:
   og_fetch: true
 
 db:
-  path: "data/news.db"
+  path: data/news.db
   keep_days: 14
 
 network:
@@ -212,7 +297,7 @@ monitor:
 
 translate:
   enabled: false
-  model: "gpt-4o-mini"
+  model: gpt-4o-mini
   max_chars_summary: 350
 
 analytics:
@@ -220,4 +305,4 @@ analytics:
   daily_report_enabled: true
   commands_enabled: true
   report_hour_local: 22
-  timezone: "Europe/Zaporozhye"
+  timezone: Europe/Zaporozhye
