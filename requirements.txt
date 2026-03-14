@@ -6,3 +6,4 @@ numpy==2.2.2
 certifi==2025.1.31
 dotenv==0.9.9
 matplotlib==3.10.8 
+scikit-learn==1.6.1

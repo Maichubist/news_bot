@@ -58,6 +58,14 @@ CREATE TABLE IF NOT EXISTS news_items (
     ua_relevance_score REAL NULL,
     wrap_name TEXT NULL,
     wrap_post_id INTEGER NULL,
+    normalized_text TEXT NULL,
+    keywords_json TEXT NULL,
+    entities_json TEXT NULL,
+    numbers_json TEXT NULL,
+    event_verbs_json TEXT NULL,
+    lexical_score REAL NULL,
+    event_match_type TEXT NULL,
+    same_event_of TEXT NULL,
     FOREIGN KEY(category_id) REFERENCES categories(id)
 );
 
@@ -104,7 +112,8 @@ DESIRED_COLS = [
     "created_at_utc", "posted_at_utc", "status", "category_id", "embedding_blob", "embedding_dim",
     "embedding_model", "dup_of", "dup_score", "score", "should_post", "post_text", "why_json",
     "scored_at_utc", "tier", "publish_mode", "event_key", "novelty_score", "impact_score",
-    "ua_relevance_score", "wrap_name", "wrap_post_id",
+    "ua_relevance_score", "wrap_name", "wrap_post_id", "normalized_text", "keywords_json",
+    "entities_json", "numbers_json", "event_verbs_json", "lexical_score", "event_match_type", "same_event_of",
 ]
 
 
@@ -166,6 +175,14 @@ class SqliteNewsRepository:
                 ua_relevance_score REAL NULL,
                 wrap_name TEXT NULL,
                 wrap_post_id INTEGER NULL,
+                normalized_text TEXT NULL,
+                keywords_json TEXT NULL,
+                entities_json TEXT NULL,
+                numbers_json TEXT NULL,
+                event_verbs_json TEXT NULL,
+                lexical_score REAL NULL,
+                event_match_type TEXT NULL,
+                same_event_of TEXT NULL,
                 FOREIGN KEY(category_id) REFERENCES categories(id)
             );
             """
@@ -183,13 +200,13 @@ class SqliteNewsRepository:
                 posted_at_utc, status, category_id, embedding_blob, embedding_dim, embedding_model,
                 dup_of, dup_score, score, should_post, post_text, why_json, scored_at_utc,
                 tier, publish_mode, event_key, novelty_score, impact_score, ua_relevance_score,
-                wrap_name, wrap_post_id
+                wrap_name, wrap_post_id, normalized_text, keywords_json, entities_json, numbers_json, event_verbs_json, lexical_score, event_match_type, same_event_of
             )
             SELECT
                 item_hash, source, title, link, summary, {img_expr}, published_at_utc, created_at_utc,
                 posted_at_utc, {status_expr}, {cat_expr}, {emb_expr}, embedding_dim, embedding_model,
                 dup_of, dup_score, score, COALESCE(should_post, 0), post_text, {why_expr}, scored_at_utc,
-                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
             FROM news_items
             """
         )
@@ -239,20 +256,77 @@ class SqliteNewsRepository:
         con.commit()
         return cur.rowcount == 1
 
+    def set_text_profile(self, item_hash: str, normalized_text: str, keywords: list[str], entities: list[str], numbers: list[str], event_verbs: list[str]) -> None:
+        con = self._connect()
+        con.execute(
+            """
+            UPDATE news_items
+            SET normalized_text=?, keywords_json=?, entities_json=?, numbers_json=?, event_verbs_json=?
+            WHERE item_hash=?
+            """,
+            (
+                normalized_text,
+                json.dumps(keywords, ensure_ascii=False),
+                json.dumps(entities, ensure_ascii=False),
+                json.dumps(numbers, ensure_ascii=False),
+                json.dumps(event_verbs, ensure_ascii=False),
+                item_hash,
+            ),
+        )
+        con.commit()
+
+    def get_recent_items_for_matching(self, since_iso: str, limit: int = 150):
+        con = self._connect()
+        rows = con.execute(
+            """
+            SELECT item_hash, normalized_text, keywords_json, entities_json, numbers_json, event_verbs_json
+            FROM news_items
+            WHERE item_hash IS NOT NULL
+              AND normalized_text IS NOT NULL
+              AND dup_of IS NULL
+              AND (published_at_utc IS NULL OR published_at_utc >= ?)
+            ORDER BY COALESCE(published_at_utc, created_at_utc) DESC
+            LIMIT ?
+            """,
+            (since_iso, int(limit)),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "item_hash": r["item_hash"],
+                "normalized_text": r["normalized_text"] or "",
+                "keywords": json.loads(r["keywords_json"] or "[]"),
+                "entities": json.loads(r["entities_json"] or "[]"),
+                "numbers": json.loads(r["numbers_json"] or "[]"),
+                "event_verbs": json.loads(r["event_verbs_json"] or "[]"),
+            })
+        return out
+
     def update_image_url(self, item_hash: str, image_url: Optional[str]) -> None:
         con = self._connect()
         con.execute("UPDATE news_items SET image_url=? WHERE item_hash=?", (image_url, item_hash))
         con.commit()
 
-    def set_embedding_and_dup(self, item_hash: str, embedding_blob: Optional[bytes], embedding_dim: Optional[int], embedding_model: Optional[str], dup_of: Optional[str], dup_score: Optional[float]) -> None:
+    def set_embedding_and_dup(
+        self,
+        item_hash: str,
+        embedding_blob: Optional[bytes],
+        embedding_dim: Optional[int],
+        embedding_model: Optional[str],
+        dup_of: Optional[str],
+        dup_score: Optional[float],
+        lexical_score: Optional[float] = None,
+        event_match_type: Optional[str] = None,
+        same_event_of: Optional[str] = None,
+    ) -> None:
         con = self._connect()
         con.execute(
             """
             UPDATE news_items
-            SET embedding_blob=?, embedding_dim=?, embedding_model=?, dup_of=?, dup_score=?
+            SET embedding_blob=?, embedding_dim=?, embedding_model=?, dup_of=?, dup_score=?, lexical_score=?, event_match_type=?, same_event_of=?
             WHERE item_hash=?
             """,
-            (embedding_blob, embedding_dim, embedding_model, dup_of, dup_score, item_hash),
+            (embedding_blob, embedding_dim, embedding_model, dup_of, dup_score, lexical_score, event_match_type, same_event_of, item_hash),
         )
         con.commit()
 

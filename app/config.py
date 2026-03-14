@@ -184,6 +184,22 @@ class TranslateCfg:
     max_chars_summary: int
 
 
+
+
+@dataclass(frozen=True)
+class TextProcessingCfg:
+    enabled: bool
+    matching_window_hours: int
+    max_candidates: int
+    max_keywords: int
+    duplicate_combined_threshold: float
+    duplicate_semantic_threshold: float
+    duplicate_lexical_threshold: float
+    same_event_combined_threshold: float
+    same_event_semantic_threshold: float
+    same_event_lexical_threshold: float
+
+
 @dataclass(frozen=True)
 class AnalyticsCfg:
     enabled: bool
@@ -210,6 +226,7 @@ class AppConfig:
     llm: LlmCfg
     filters: FiltersCfg
     analytics: AnalyticsCfg
+    text_processing: TextProcessingCfg
 
     @staticmethod
     def load(path: str = "config.yaml") -> "AppConfig":
@@ -229,6 +246,7 @@ class AppConfig:
         llm = _as_dict(_req(raw, "llm"), "llm")
         filters = _as_dict(_req(raw, "filters"), "filters")
         analytics = _as_dict(_req(raw, "analytics"), "analytics")
+        text_processing = _as_dict(raw.get("text_processing") or {}, "text_processing")
 
         tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
         oa_key = os.getenv("OPENAI_API_KEY")
@@ -397,5 +415,17 @@ class AppConfig:
                 commands_enabled=_as_bool(_req(analytics, "commands_enabled", "analytics"), "analytics.commands_enabled"),
                 report_hour_local=_as_int(_req(analytics, "report_hour_local", "analytics"), "analytics.report_hour_local"),
                 timezone=str(_req(analytics, "timezone", "analytics")).strip(),
+            ),
+            text_processing=TextProcessingCfg(
+                enabled=_as_bool(text_processing.get("enabled", True), "text_processing.enabled"),
+                matching_window_hours=_as_int(text_processing.get("matching_window_hours", emb.get("window_hours", 36)), "text_processing.matching_window_hours"),
+                max_candidates=_as_int(text_processing.get("max_candidates", 150), "text_processing.max_candidates"),
+                max_keywords=_as_int(text_processing.get("max_keywords", 12), "text_processing.max_keywords"),
+                duplicate_combined_threshold=_as_float(text_processing.get("duplicate_combined_threshold", 0.88), "text_processing.duplicate_combined_threshold"),
+                duplicate_semantic_threshold=_as_float(text_processing.get("duplicate_semantic_threshold", 0.90), "text_processing.duplicate_semantic_threshold"),
+                duplicate_lexical_threshold=_as_float(text_processing.get("duplicate_lexical_threshold", 0.70), "text_processing.duplicate_lexical_threshold"),
+                same_event_combined_threshold=_as_float(text_processing.get("same_event_combined_threshold", 0.77), "text_processing.same_event_combined_threshold"),
+                same_event_semantic_threshold=_as_float(text_processing.get("same_event_semantic_threshold", 0.78), "text_processing.same_event_semantic_threshold"),
+                same_event_lexical_threshold=_as_float(text_processing.get("same_event_lexical_threshold", 0.52), "text_processing.same_event_lexical_threshold"),
             ),
         )

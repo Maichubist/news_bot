@@ -5,7 +5,9 @@ from typing import Callable
 
 from app.config import AppConfig
 from app.dedup.embeddings import OpenAIEmbeddingClient
+from app.dedup.event_matcher import EventMatcher
 from app.dedup.exact import ExactDeduper
+from app.dedup.lexical import LexicalDeduper
 from app.dedup.semantic import SemanticDeduper
 from app.http import RequestsSession, build_verify_option
 from app.rss.fetcher import RssFetcher
@@ -19,6 +21,7 @@ from app.services.telegram_analytics_commands import TelegramAnalyticsCommands
 from app.storage.sqlite_repo import SqliteNewsRepository
 from app.telegram.client import TelegramClient
 from app.telegram.formatter import PostFormatter
+from app.text.profile import TextProfileBuilder
 
 
 @dataclass
@@ -72,6 +75,16 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
     exact = ExactDeduper()
     embedder = OpenAIEmbeddingClient(http=http, api_key=cfg.openai.api_key, model=cfg.openai.model)
     semantic = SemanticDeduper(repo=repo, window_hours=cfg.embeddings.window_hours, threshold=cfg.embeddings.threshold)
+    profile_builder = TextProfileBuilder(max_keywords=cfg.text_processing.max_keywords)
+    lexical = LexicalDeduper(max_candidates=cfg.text_processing.max_candidates)
+    event_matcher = EventMatcher(
+        duplicate_combined_threshold=cfg.text_processing.duplicate_combined_threshold,
+        duplicate_semantic_threshold=cfg.text_processing.duplicate_semantic_threshold,
+        duplicate_lexical_threshold=cfg.text_processing.duplicate_lexical_threshold,
+        same_event_combined_threshold=cfg.text_processing.same_event_combined_threshold,
+        same_event_semantic_threshold=cfg.text_processing.same_event_semantic_threshold,
+        same_event_lexical_threshold=cfg.text_processing.same_event_lexical_threshold,
+    )
     tg = TelegramClient(http=http, token=cfg.telegram.token, chat_id=cfg.telegram.chat_id, admin_chat_id=cfg.telegram.admin_chat_id)
     fmt = PostFormatter(include_source=cfg.posting.include_source_name)
 
@@ -117,6 +130,9 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
         exact=exact,
         embedder=embedder,
         semantic=semantic,
+        profile_builder=profile_builder,
+        lexical=lexical,
+        event_matcher=event_matcher,
         tg=tg,
         formatter=fmt,
         postmaker=postmaker,

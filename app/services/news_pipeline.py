@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Tuple
 
+from app.dedup.lexical import LexicalCandidate
 from app.dedup.semantic import pack_vec
 from app.text.summary import is_good_summary, truncate
 
@@ -13,13 +14,16 @@ log = logging.getLogger("services.pipeline")
 
 
 class NewsPipeline:
-    def __init__(self, cfg, repo, rss, exact, embedder, semantic, tg, formatter, postmaker, digestmaker, wrapmaker=None, prompt_manager=None):
+    def __init__(self, cfg, repo, rss, exact, embedder, semantic, tg, formatter, postmaker, digestmaker, wrapmaker=None, prompt_manager=None, profile_builder=None, lexical=None, event_matcher=None):
         self.cfg = cfg
         self.repo = repo
         self.rss = rss
         self.exact = exact
         self.embedder = embedder
         self.semantic = semantic
+        self.profile_builder = profile_builder
+        self.lexical = lexical
+        self.event_matcher = event_matcher
         self.tg = tg
         self.formatter = formatter
         self.postmaker = postmaker
@@ -39,6 +43,10 @@ class NewsPipeline:
                 self.wrap_category_map.setdefault(cat, rule)
         images_cfg = getattr(cfg, "images", None)
         self.enable_og_image = bool(getattr(images_cfg, "og_fetch", True))
+        tp_cfg = getattr(cfg, "text_processing", None)
+        self.text_processing_enabled = bool(getattr(tp_cfg, "enabled", True))
+        self.matching_window_hours = int(getattr(tp_cfg, "matching_window_hours", getattr(cfg.embeddings, "window_hours", 36)) or getattr(cfg.embeddings, "window_hours", 36))
+        self.max_matching_candidates = int(getattr(tp_cfg, "max_candidates", 150) or 150)
 
     def run_once(self) -> None:
         inserted = embedded = semantic_dups = scored = approved = posted = 0
@@ -73,6 +81,20 @@ class NewsPipeline:
             if it.summary:
                 text_for_vec += "\n\n" + truncate(it.summary, max_len=500)
 
+            profile = self.profile_builder.build(it.title, it.summary) if self.profile_builder else None
+            if profile is not None:
+                try:
+                    self.repo.set_text_profile(
+                        item_hash=h,
+                        normalized_text=profile.normalized_text,
+                        keywords=profile.keywords,
+                        entities=profile.entities,
+                        numbers=profile.numbers,
+                        event_verbs=profile.event_verbs,
+                    )
+                except Exception:
+                    log.exception("Failed to persist text profile")
+
             try:
                 vec = self.embedder.embed(text_for_vec)
             except Exception as ex:
@@ -82,10 +104,66 @@ class NewsPipeline:
                 continue
 
             embedded += 1
-            dup_of, dup_score = self.semantic.find_dup(vec)
-            if dup_of is not None:
+            semantic_match_hash, semantic_match_score = self.semantic.find_best_match(vec)
+            lexical_match = None
+            if self.text_processing_enabled and self.lexical and profile is not None:
+                try:
+                    since_iso = (datetime.now(timezone.utc) - timedelta(hours=self.matching_window_hours)).isoformat(timespec="seconds")
+                    recent_items = self.repo.get_recent_items_for_matching(since_iso=since_iso, limit=self.max_matching_candidates)
+                    lexical_candidates = [
+                        LexicalCandidate(
+                            item_hash=str(r.get("item_hash") or ""),
+                            normalized_text=str(r.get("normalized_text") or ""),
+                            keywords=list(r.get("keywords") or []),
+                            entities=list(r.get("entities") or []),
+                            numbers=list(r.get("numbers") or []),
+                            event_verbs=list(r.get("event_verbs") or []),
+                        )
+                        for r in recent_items
+                        if str(r.get("item_hash") or "") and str(r.get("item_hash") or "") != h
+                    ]
+                    lexical_match = self.lexical.find_best_match(
+                        LexicalCandidate(
+                            item_hash=h,
+                            normalized_text=profile.normalized_text,
+                            keywords=profile.keywords,
+                            entities=profile.entities,
+                            numbers=profile.numbers,
+                            event_verbs=profile.event_verbs,
+                        ),
+                        lexical_candidates,
+                    )
+                except Exception:
+                    log.exception("Lexical matching failed")
+
+            event_decision = self.event_matcher.decide(semantic_match_hash, semantic_match_score, lexical_match) if (self.event_matcher and lexical_match is not None) else None
+            dup_of = None
+            dup_score = float(semantic_match_score or 0.0) if semantic_match_hash else None
+            lexical_score = float(getattr(lexical_match, "score", 0.0) or 0.0) if lexical_match is not None else None
+            event_match_type = getattr(event_decision, "match_type", None)
+            same_event_of = None
+            if event_decision is not None:
+                if event_decision.match_type == "duplicate":
+                    dup_of = event_decision.matched_item_hash
+                    dup_score = max(float(semantic_match_score or 0.0), float(event_decision.combined_score or 0.0))
+                    semantic_dups += 1
+                elif event_decision.match_type == "same_event":
+                    same_event_of = event_decision.matched_item_hash
+            elif semantic_match_hash is not None and float(semantic_match_score or 0.0) >= self.cfg.embeddings.threshold:
+                dup_of = semantic_match_hash
                 semantic_dups += 1
-            self.repo.set_embedding_and_dup(item_hash=h, embedding_blob=pack_vec(vec), embedding_dim=int(vec.shape[0]), embedding_model=self.cfg.openai.model, dup_of=dup_of, dup_score=dup_score)
+
+            self.repo.set_embedding_and_dup(
+                item_hash=h,
+                embedding_blob=pack_vec(vec),
+                embedding_dim=int(vec.shape[0]),
+                embedding_model=self.cfg.openai.model,
+                dup_of=dup_of,
+                dup_score=dup_score,
+                lexical_score=lexical_score,
+                event_match_type=event_match_type,
+                same_event_of=same_event_of,
+            )
             if dup_of is not None:
                 continue
 
@@ -105,7 +183,15 @@ class NewsPipeline:
             effective_mode = requested_mode
             status_override = None
             wrap_name = None
-            if should_post and wrap_rule and requested_mode == "wrap_candidate":
+            same_event_of = same_event_of if "same_event_of" in locals() else None
+            if same_event_of and should_post:
+                if wrap_rule:
+                    effective_mode = "wrap_candidate"
+                    status_override = "pending_wrap"
+                    wrap_name = getattr(wrap_rule, "key", None)
+                else:
+                    effective_mode = "digest"
+            elif should_post and wrap_rule and requested_mode == "wrap_candidate":
                 effective_mode = "wrap_candidate"
                 status_override = "pending_wrap"
                 wrap_name = getattr(wrap_rule, "key", None)
