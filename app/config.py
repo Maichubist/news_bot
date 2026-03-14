@@ -184,8 +184,6 @@ class TranslateCfg:
     max_chars_summary: int
 
 
-
-
 @dataclass(frozen=True)
 class TextProcessingCfg:
     enabled: bool

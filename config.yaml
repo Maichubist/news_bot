@@ -305,7 +305,7 @@ analytics:
   daily_report_enabled: true
   commands_enabled: true
   report_hour_local: 22
-  timezone: Europe/Zaporozhye
+  timezone: Europe/Kyiv
 
 text_processing:
   enabled: true
@@ -318,3 +318,8 @@ text_processing:
   same_event_combined_threshold: 0.68
   same_event_semantic_threshold: 0.82
   same_event_lexical_threshold: 0.28
+
+dedup:
+  semantic_duplicate_threshold: 0.86
+  semantic_same_event_threshold: 0.68
+  lexical_same_event_threshold: 0.45

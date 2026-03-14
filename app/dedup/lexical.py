@@ -1,19 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
-
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.metrics.pairwise import cosine_similarity
-    SKLEARN_OK = True
-except Exception:  # pragma: no cover
-    TfidfVectorizer = None
-    cosine_similarity = None
-    SKLEARN_OK = False
+from typing import Iterable, Optional
+from collections import Counter
+import math
+import re
 
 
-@dataclass(frozen=True)
+TOKEN_RE = re.compile(r"[a-zA-Zа-яА-ЯіІїЇєЄ0-9][a-zA-Zа-яА-ЯіІїЇєЄ0-9\-']+")
+
+
+STOPWORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "what", "when",
+    "after", "before", "have", "has", "had", "about", "into", "over",
+    "under", "while", "where", "will", "would", "could", "should",
+    "they", "them", "their", "said", "says", "amid", "than",
+    "also", "more", "less", "just", "still", "already",
+    "update", "updates", "live", "news", "latest"
+}
+
+
+@dataclass
 class LexicalCandidate:
     item_hash: str
     normalized_text: str
@@ -23,88 +30,145 @@ class LexicalCandidate:
     event_verbs: list[str]
 
 
-@dataclass(frozen=True)
+@dataclass
 class LexicalMatch:
-    item_hash: str | None
+    item_hash: Optional[str]
     score: float
-    word_score: float
-    char_score: float
+    text_score: float
     keyword_overlap: float
     entity_overlap: float
     number_overlap: float
     verb_overlap: float
 
 
+def tokenize(text: str) -> list[str]:
+    return _tokenize(text)
+
+
+def _tokenize(text: str) -> list[str]:
+    tokens = TOKEN_RE.findall((text or "").lower())
+    out: list[str] = []
+
+    for t in tokens:
+        if len(t) < 3:
+            continue
+        if t in STOPWORDS:
+            continue
+        if t.isdigit():
+            continue
+        out.append(t)
+
+    return out
+
+
+def _counter_cosine(a: Counter, b: Counter) -> float:
+    if not a or not b:
+        return 0.0
+
+    common = set(a.keys()) & set(b.keys())
+    num = sum(a[k] * b[k] for k in common)
+
+    den_a = math.sqrt(sum(v * v for v in a.values()))
+    den_b = math.sqrt(sum(v * v for v in b.values()))
+    den = den_a * den_b
+
+    if den == 0:
+        return 0.0
+
+    return float(num / den)
+
+
+def _jaccard(a: Iterable[str], b: Iterable[str]) -> float:
+    sa = {str(x).strip().lower() for x in (a or []) if str(x).strip()}
+    sb = {str(x).strip().lower() for x in (b or []) if str(x).strip()}
+
+    if not sa or not sb:
+        return 0.0
+
+    inter = sa & sb
+    union = sa | sb
+
+    if not union:
+        return 0.0
+
+    return float(len(inter) / len(union))
+
+
 class LexicalDeduper:
-    def __init__(self, max_candidates: int = 150):
+    def __init__(
+        self,
+        max_keywords: int = 12,
+        same_event_lexical_threshold: float = 0.52,
+        duplicate_lexical_threshold: float = 0.70,
+        max_candidates: int | None = None,
+        **kwargs,
+    ):
+        # max_candidates тут приймаємо лише для сумісності з bootstrap.py
+        self.max_keywords = max_keywords
+        self.same_event_lexical_threshold = same_event_lexical_threshold
+        self.duplicate_lexical_threshold = duplicate_lexical_threshold
         self.max_candidates = max_candidates
 
-    def find_best_match(self, current: LexicalCandidate, candidates: Iterable[LexicalCandidate]) -> LexicalMatch:
-        pool = [c for c in candidates if c.item_hash != current.item_hash][: self.max_candidates]
-        if not pool:
-            return LexicalMatch(None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    def _text_score(self, left: str, right: str) -> float:
+        lt = Counter(_tokenize(left))
+        rt = Counter(_tokenize(right))
+        return _counter_cosine(lt, rt)
 
-        word_scores = self._tfidf_scores(current.normalized_text, [c.normalized_text for c in pool], analyzer='word', ngram_range=(1, 2))
-        char_scores = self._tfidf_scores(current.normalized_text, [c.normalized_text for c in pool], analyzer='char_wb', ngram_range=(3, 5))
+    def score_pair(self, left: LexicalCandidate, right: LexicalCandidate) -> LexicalMatch:
+        text_score = self._text_score(left.normalized_text, right.normalized_text)
 
-        best: LexicalMatch | None = None
-        for idx, cand in enumerate(pool):
-            keyword_overlap = self._jaccard(current.keywords, cand.keywords)
-            entity_overlap = self._jaccard(self._norm_list(current.entities), self._norm_list(cand.entities))
-            number_overlap = self._jaccard(current.numbers, cand.numbers)
-            verb_overlap = self._jaccard(current.event_verbs, cand.event_verbs)
-            word_score = word_scores[idx]
-            char_score = char_scores[idx]
-            score = (
-                0.24 * word_score
-                + 0.18 * char_score
-                + 0.18 * max(word_score, char_score)
-                + 0.18 * keyword_overlap
-                + 0.17 * entity_overlap
-                + 0.03 * number_overlap
-                + 0.02 * verb_overlap
-            )
-            match = LexicalMatch(
-                item_hash=cand.item_hash,
-                score=float(score),
-                word_score=float(word_score),
-                char_score=float(char_score),
-                keyword_overlap=float(keyword_overlap),
-                entity_overlap=float(entity_overlap),
-                number_overlap=float(number_overlap),
-                verb_overlap=float(verb_overlap),
-            )
+        keyword_overlap = _jaccard(
+            left.keywords[: self.max_keywords],
+            right.keywords[: self.max_keywords],
+        )
+        entity_overlap = _jaccard(left.entities, right.entities)
+        number_overlap = _jaccard(left.numbers, right.numbers)
+        verb_overlap = _jaccard(left.event_verbs, right.event_verbs)
+
+        score = (
+            0.42 * text_score
+            + 0.28 * keyword_overlap
+            + 0.20 * entity_overlap
+            + 0.05 * number_overlap
+            + 0.05 * verb_overlap
+        )
+
+        if entity_overlap >= 0.50 and keyword_overlap >= 0.40:
+            score += 0.06
+
+        if text_score >= 0.75 and keyword_overlap >= 0.50:
+            score += 0.04
+
+        score = min(float(score), 1.0)
+
+        return LexicalMatch(
+            item_hash=right.item_hash,
+            score=score,
+            text_score=text_score,
+            keyword_overlap=keyword_overlap,
+            entity_overlap=entity_overlap,
+            number_overlap=number_overlap,
+            verb_overlap=verb_overlap,
+        )
+
+    def find_best_match(
+        self,
+        candidate: LexicalCandidate,
+        candidates: list[LexicalCandidate],
+    ) -> Optional[LexicalMatch]:
+        best: Optional[LexicalMatch] = None
+
+        # Якщо список дуже великий і max_candidates заданий — обрізаємо
+        if self.max_candidates and self.max_candidates > 0:
+            candidates = candidates[: self.max_candidates]
+
+        for other in candidates:
+            if not other.item_hash or other.item_hash == candidate.item_hash:
+                continue
+
+            match = self.score_pair(candidate, other)
+
             if best is None or match.score > best.score:
                 best = match
 
-        return best or LexicalMatch(None, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-    def _tfidf_scores(self, current_text: str, candidate_texts: List[str], analyzer: str, ngram_range: tuple[int, int]) -> list[float]:
-        if not candidate_texts:
-            return []
-        if SKLEARN_OK and TfidfVectorizer is not None and cosine_similarity is not None:
-            try:
-                vectorizer = TfidfVectorizer(analyzer=analyzer, ngram_range=ngram_range, min_df=1)
-                matrix = vectorizer.fit_transform([current_text] + candidate_texts)
-                sims = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
-                return [float(x) for x in sims.tolist()]
-            except Exception:
-                pass
-        return [self._fallback_overlap(current_text, txt) for txt in candidate_texts]
-
-    def _fallback_overlap(self, a: str, b: str) -> float:
-        sa = set(a.split())
-        sb = set(b.split())
-        if not sa or not sb:
-            return 0.0
-        return len(sa & sb) / len(sa | sb)
-
-    def _jaccard(self, a: Iterable[str], b: Iterable[str]) -> float:
-        sa = {str(x).strip().lower() for x in a if str(x).strip()}
-        sb = {str(x).strip().lower() for x in b if str(x).strip()}
-        if not sa or not sb:
-            return 0.0
-        return len(sa & sb) / len(sa | sb)
-
-    def _norm_list(self, xs: Iterable[str]) -> list[str]:
-        return [str(x).strip().lower() for x in xs if str(x).strip()]
+        return best

@@ -1,71 +1,97 @@
+from __future__ import annotations
+
 import re
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 
-_UTM_KEYS_PREFIX = ("utm_",)
-_DROP_KEYS_EXACT = {
-    "fbclid", "gclid", "yclid", "mc_cid", "mc_eid",
-    "igshid", "mkt_tok",
-    "ref", "referrer", "source", "src", "cmpid", "ocid", "sr",
-    "spm", "mkt", "campaign", "campaignid", "fb_action_ids", "fb_action_types",
-}
-
-_DROP_TEXT_PATTERNS = [
-    r"(?i)read more",
-    r"(?i)click here",
-    r"(?i)newsletter",
-    r"(?i)subscribe now",
-    r"(?i)live updates?",
-    r"(?i)as it happened",
+NOISE_PATTERNS = [
+    r"\bwhat we know\b",
+    r"\bwhat is happening\b",
+    r"\blive updates?\b",
+    r"\bas it happened\b",
+    r"\bminute[- ]by[- ]minute\b",
+    r"\bday \d+\b",
 ]
 
+TRACKING_QUERY_KEYS = {
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "utm_id",
+    "gclid",
+    "fbclid",
+    "mc_cid",
+    "mc_eid",
+    "ref",
+    "ref_src",
+    "ref_url",
+    "src",
+    "source",
+    "s",
+    "smid",
+    "cmpid",
+    "taid",
+}
 
-def canonicalize_url(url: str) -> str:
+
+def normalize_text(text: str | None) -> str:
+    text = (text or "").strip().lower()
+
+    for pattern in NOISE_PATTERNS:
+        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+
+    # прибираємо html entities-подібний шум
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&amp;", "&")
+
+    # прибираємо зайві числа/коди типу 039, 2026 тощо як окремі токени
+    text = re.sub(r"\b\d+\b", " ", text)
+
+    # прибираємо все, що не букви/цифри/пробіли/базова пунктуація
+    text = re.sub(r"[^\w\s\-:/.,%$€£]", " ", text, flags=re.UNICODE)
+
+    # схлопуємо пробіли
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def normalize(text: str | None) -> str:
+    """
+    Залишаємо короткий alias для сумісності з новим кодом.
+    """
+    return normalize_text(text)
+
+
+def canonicalize_url(url: str | None) -> str:
+    url = (url or "").strip()
+    if not url:
+        return ""
+
     try:
-        parts = urlsplit(url.strip())
-        scheme = parts.scheme.lower() or "https"
-        netloc = parts.netloc.lower()
-
-        path = parts.path or ""
-        path = re.sub(r"/{2,}", "/", path)
-        if path != "/" and path.endswith("/"):
-            path = path[:-1]
-
-        query_pairs = []
-        for k, v in parse_qsl(parts.query, keep_blank_values=True):
-            kl = k.lower()
-            if kl in _DROP_KEYS_EXACT:
-                continue
-            if any(kl.startswith(p) for p in _UTM_KEYS_PREFIX):
-                continue
-            query_pairs.append((k, v))
-
-        query = urlencode(query_pairs, doseq=True)
-        netloc = netloc.replace(":80", "").replace(":443", "")
-        return urlunsplit((scheme, netloc, path, query, ""))
+        parts = urlsplit(url)
     except Exception:
-        return url.strip()
+        return url
 
+    scheme = (parts.scheme or "https").lower()
+    netloc = (parts.netloc or "").lower()
+    path = parts.path or "/"
 
-def normalize_text(s: str) -> str:
-    s = (s or "").strip().lower()
-    s = re.sub(r"\s+", " ", s)
-    return s
+    # прибираємо trailing slash, але не ламаємо root
+    if path != "/":
+        path = path.rstrip("/")
 
+    # викидаємо tracking query params
+    clean_query = []
+    for k, v in parse_qsl(parts.query, keep_blank_values=True):
+        if k.lower() in TRACKING_QUERY_KEYS:
+            continue
+        clean_query.append((k, v))
 
-def strip_noise_text(s: str) -> str:
-    text = (s or "").strip()
-    for pat in _DROP_TEXT_PATTERNS:
-        text = re.sub(pat, " ", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    query = urlencode(clean_query, doseq=True)
 
+    # fragment для news dedup не потрібен
+    fragment = ""
 
-def normalize_article_text(s: str) -> str:
-    text = strip_noise_text(s)
-    text = text.replace("’", "'")
-    text = text.lower()
-    text = re.sub(r"[^\w\s\-\$€£¥%\.]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return urlunsplit((scheme, netloc, path, query, fragment))
