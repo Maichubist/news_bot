@@ -135,6 +135,41 @@ class PostingCfg:
 
 
 @dataclass(frozen=True)
+class TopicQuotaCfg:
+    window1_hours: int
+    max_posts_window1: int
+    window2_hours: int
+    max_posts_window2: int
+
+
+@dataclass(frozen=True)
+class TopicSaturationCfg:
+    lookback_hours: int
+    max_topic_share: float
+    min_posts: int
+
+
+@dataclass(frozen=True)
+class EditorialDelayCfg:
+    min_minutes: int
+    max_minutes: int
+
+
+@dataclass(frozen=True)
+class SourceWeightingCfg:
+    high_trust_sources: list[str]
+
+
+@dataclass(frozen=True)
+class EditorialCfg:
+    min_post_score: float
+    topic_quota: TopicQuotaCfg
+    topic_saturation: TopicSaturationCfg
+    delay_non_breaking: EditorialDelayCfg
+    source_weighting: SourceWeightingCfg
+
+
+@dataclass(frozen=True)
 class ImagesCfg:
     og_fetch: bool
 
@@ -225,6 +260,7 @@ class AppConfig:
     filters: FiltersCfg
     analytics: AnalyticsCfg
     text_processing: TextProcessingCfg
+    editorial: EditorialCfg
 
     @staticmethod
     def load(path: str = "config.yaml") -> "AppConfig":
@@ -245,6 +281,7 @@ class AppConfig:
         filters = _as_dict(_req(raw, "filters"), "filters")
         analytics = _as_dict(_req(raw, "analytics"), "analytics")
         text_processing = _as_dict(raw.get("text_processing") or {}, "text_processing")
+        editorial = _as_dict(raw.get("editorial") or {}, "editorial")
 
         tg_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TG_TOKEN")
         oa_key = os.getenv("OPENAI_API_KEY")
@@ -324,6 +361,12 @@ class AppConfig:
             "tech": "tech_wrap_prompt",
             "science_wrap": "tech_wrap_prompt",
         }
+
+
+        editorial_topic_quota = _as_dict(editorial.get("topic_quota") or {}, "editorial.topic_quota")
+        editorial_topic_saturation = _as_dict(editorial.get("topic_saturation") or {}, "editorial.topic_saturation")
+        editorial_delay = _as_dict(editorial.get("delay_non_breaking") or {}, "editorial.delay_non_breaking")
+        editorial_sources = _as_dict(editorial.get("source_weighting") or {}, "editorial.source_weighting")
 
         wrap_rules_raw = _as_list(_req(posting, "wrap_rules", "posting"), "posting.wrap_rules")
         wrap_rules_cfg: list[WrapRuleCfg] = []
@@ -425,5 +468,26 @@ class AppConfig:
                 same_event_combined_threshold=_as_float(text_processing.get("same_event_combined_threshold", 0.77), "text_processing.same_event_combined_threshold"),
                 same_event_semantic_threshold=_as_float(text_processing.get("same_event_semantic_threshold", 0.78), "text_processing.same_event_semantic_threshold"),
                 same_event_lexical_threshold=_as_float(text_processing.get("same_event_lexical_threshold", 0.52), "text_processing.same_event_lexical_threshold"),
+            ),
+            editorial=EditorialCfg(
+                min_post_score=_as_float(editorial.get("min_post_score", 0.84), "editorial.min_post_score"),
+                topic_quota=TopicQuotaCfg(
+                    window1_hours=_as_int(editorial_topic_quota.get("window1_hours", 4), "editorial.topic_quota.window1_hours"),
+                    max_posts_window1=_as_int(editorial_topic_quota.get("max_posts_window1", 1), "editorial.topic_quota.max_posts_window1"),
+                    window2_hours=_as_int(editorial_topic_quota.get("window2_hours", 12), "editorial.topic_quota.window2_hours"),
+                    max_posts_window2=_as_int(editorial_topic_quota.get("max_posts_window2", 2), "editorial.topic_quota.max_posts_window2"),
+                ),
+                topic_saturation=TopicSaturationCfg(
+                    lookback_hours=_as_int(editorial_topic_saturation.get("lookback_hours", 12), "editorial.topic_saturation.lookback_hours"),
+                    max_topic_share=_as_float(editorial_topic_saturation.get("max_topic_share", 0.40), "editorial.topic_saturation.max_topic_share"),
+                    min_posts=_as_int(editorial_topic_saturation.get("min_posts", 5), "editorial.topic_saturation.min_posts"),
+                ),
+                delay_non_breaking=EditorialDelayCfg(
+                    min_minutes=_as_int(editorial_delay.get("min_minutes", 10), "editorial.delay_non_breaking.min_minutes"),
+                    max_minutes=_as_int(editorial_delay.get("max_minutes", 20), "editorial.delay_non_breaking.max_minutes"),
+                ),
+                source_weighting=SourceWeightingCfg(
+                    high_trust_sources=_as_str_list(editorial_sources.get("high_trust_sources") or ["Reuters", "Bloomberg", "Financial Times", "Associated Press"]),
+                ),
             ),
         )

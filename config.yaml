@@ -37,35 +37,43 @@ llm:
   wrap_model: gpt-4o-mini
 
   post_prompt: |
-    Ти професійний редактор українського Telegram-каналу про геополітику, економіку і технології.
+    Ти редактор новинного Telegram-каналу.
+
+    Поверни лише JSON.
+    Не інтерпретуй подію. Не пиши висновків, прогнозів, "це означає" або емоційних формулювань.
+    Пиши тільки перевірювані факти з наданого тексту.
 
     Завдання:
-    1) Визнач, чи це справді варта уваги новина.
-    2) Визнач режим публікації: окремий пост, кандидат у wrap, лише в digest або drop.
-    3) Якщо новина варта уваги, напиши короткий пост українською.
+    1) класифікуй матеріал у news_type: hard_news | followup | commentary | analysis | noise | promo
+    2) оціни, чи в тексті є новий факт: нові цифри, нова дія, новий актор або новий наслідок
+    3) напиши короткий пост українською у 1-2 реченнях, максимум 320 символів
+    4) якщо це noise/promo/commentary/analysis і короткий фактологічний пост не потрібен — post_text залиш порожнім рядком
 
-    Формат відповіді JSON:
+    Формат JSON:
     - score: 0..1
-    - should_post: true/false
-    - post_text: короткий пост
-    - why: 1-4 короткі причини
+    - should_post: boolean
+    - post_text: string
+    - why: array[string]
     - category: одна категорія зі списку
     - tier: A/B/C/D
     - publish_mode: post | wrap_candidate | digest | drop
     - event_key: короткий стабільний ключ події англійською lowercase через дефіс
+    - topic_key: короткий ключ теми англійською lowercase через дефіс
     - novelty_score: 0..1
     - impact_score: 0..1
     - ua_relevance_score: 0..1
+    - news_type: hard_news | followup | commentary | analysis | noise | promo
+    - has_new_fact: boolean
+    - is_breaking: boolean
 
     Правила:
-    - should_post=false для реклами, партнерського матеріалу, відео, подкасту, колонок, дайджестів, добірок, купонів, вакансій, технічних сторінок без новини.
-    - tier A і publish_mode=post лише для великого нового факту, рішення, удару, санкцій, угоди або справді сильної новизни.
-    - publish_mode=wrap_candidate став для ринкових, геополітичних або технологічних сюжетів, які важливі, але краще виглядатимуть у зведеному пості разом з іншими новинами тієї ж хвилі.
-    - publish_mode=digest став для другорядних, похідних або коментарних сюжетів.
-    - publish_mode=drop став для слабкого шуму, повторів без новизни або явно непотрібних матеріалів.
-    - Не роздмухуй значення. Не пиши штучний пафос. Не вставляй без потреби фрази про вплив на Україну.
-    - Максимум 420 символів.
-    - Жодних службових міток у тексті. Не пиши слово "Заголовок".
+    - hard_news = нове рішення, атака, санкції, угода, офіційна дія, реліз даних, фінансовий результат, кадрове рішення, аварія або інцидент.
+    - followup = апдейт уже відомої теми без великого нового факту.
+    - commentary/analysis = оцінка, колонка, пояснення, аналітика, інтерв'ю.
+    - noise/promo = реклама, добірка, подкаст, відео, розсилка, вакансія, купони, сервісні сторінки.
+    - У post_text не додавай нічого, чого прямо немає у вхідному тексті.
+    - Без слів "важливо", "історично", "різко", "серйозний сигнал" та подібного пафосу.
+    - Не пиши слово "Заголовок".
 
     Новина:
     {news_text}
@@ -323,3 +331,29 @@ dedup:
   semantic_duplicate_threshold: 0.86
   semantic_same_event_threshold: 0.68
   lexical_same_event_threshold: 0.45
+
+editorial:
+  min_post_score: 0.84
+
+  topic_quota:
+    window1_hours: 4
+    max_posts_window1: 1
+    window2_hours: 12
+    max_posts_window2: 2
+
+  topic_saturation:
+    lookback_hours: 12
+    max_topic_share: 0.40
+    min_posts: 5
+
+  delay_non_breaking:
+    min_minutes: 10
+    max_minutes: 20
+
+  source_weighting:
+    high_trust_sources:
+      - Reuters
+      - Bloomberg
+      - Financial Times
+      - Associated Press
+      - AP

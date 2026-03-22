@@ -18,9 +18,13 @@ class PostDecision:
     tier: str = "C"
     publish_mode: str = "digest"
     event_key: str = ""
+    topic_key: str = ""
     novelty_score: float = 0.0
     impact_score: float = 0.0
     ua_relevance_score: float = 0.0
+    news_type: str = "noise"
+    has_new_fact: bool = False
+    is_breaking: bool = False
 
 
 class OpenAINewsPostMaker:
@@ -62,9 +66,13 @@ class OpenAINewsPostMaker:
                 "tier": {"type": "string", "enum": ["A", "B", "C", "D"]},
                 "publish_mode": {"type": "string", "enum": ["post", "wrap_candidate", "digest", "drop"]},
                 "event_key": {"type": "string"},
+                "topic_key": {"type": "string"},
                 "novelty_score": {"type": "number", "minimum": 0, "maximum": 1},
                 "impact_score": {"type": "number", "minimum": 0, "maximum": 1},
                 "ua_relevance_score": {"type": "number", "minimum": 0, "maximum": 1},
+                "news_type": {"type": "string", "enum": ["hard_news", "followup", "commentary", "analysis", "noise", "promo"]},
+                "has_new_fact": {"type": "boolean"},
+                "is_breaking": {"type": "boolean"},
             },
             "required": [
                 "score",
@@ -75,9 +83,13 @@ class OpenAINewsPostMaker:
                 "tier",
                 "publish_mode",
                 "event_key",
+                "topic_key",
                 "novelty_score",
                 "impact_score",
                 "ua_relevance_score",
+                "news_type",
+                "has_new_fact",
+                "is_breaking",
             ],
         }
 
@@ -91,7 +103,7 @@ class OpenAINewsPostMaker:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "post_decision_v3",
+                    "name": "post_decision_v4",
                     "schema": schema,
                     "strict": True,
                 }
@@ -139,9 +151,13 @@ class OpenAINewsPostMaker:
                 tier=str(obj.get("tier") or "C").strip() or "C",
                 publish_mode=str(obj.get("publish_mode") or "digest").strip() or "digest",
                 event_key=str(obj.get("event_key") or "").strip(),
+                topic_key=str(obj.get("topic_key") or obj.get("event_key") or "").strip(),
                 novelty_score=float(obj.get("novelty_score") or 0.0),
                 impact_score=float(obj.get("impact_score") or 0.0),
                 ua_relevance_score=float(obj.get("ua_relevance_score") or 0.0),
+                news_type=str(obj.get("news_type") or "noise").strip() or "noise",
+                has_new_fact=bool(obj.get("has_new_fact")),
+                is_breaking=bool(obj.get("is_breaking")),
             )
         except Exception as ex:
             log.warning("OpenAI postmaker parse error: %s", ex)

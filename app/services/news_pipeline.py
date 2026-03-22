@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 
 from app.dedup.lexical import LexicalCandidate
 from app.dedup.semantic import pack_vec
+from app.services.editorial_policy import DelayCfg, TopicQuotaCfg, SaturationCfg, decide_publish_mode
 from app.text.summary import is_good_summary, truncate
 
 log = logging.getLogger("services.pipeline")
@@ -48,7 +49,7 @@ class NewsPipeline:
         self.wrapmaker = wrapmaker
         self.prompt_manager = prompt_manager
 
-        self.score_threshold = float(getattr(cfg, "score_threshold", 0.72))
+        self.score_threshold = float(getattr(getattr(cfg, "editorial", None), "min_post_score", 0.84))
         self.digest_hour_local = int(getattr(cfg, "digest_hour_local", 21))
 
         posting_cfg = getattr(cfg, "posting", None)
@@ -71,6 +72,28 @@ class NewsPipeline:
         )
         self.max_matching_candidates = int(getattr(tp_cfg, "max_candidates", 150) or 150)
 
+        editorial = getattr(cfg, "editorial", None)
+        tq = getattr(editorial, "topic_quota", None)
+        ts = getattr(editorial, "topic_saturation", None)
+        dd = getattr(editorial, "delay_non_breaking", None)
+        sw = getattr(editorial, "source_weighting", None)
+        self.topic_quota_cfg = TopicQuotaCfg(
+            window1_hours=int(getattr(tq, "window1_hours", 4) or 4),
+            max_posts_window1=int(getattr(tq, "max_posts_window1", 1) or 1),
+            window2_hours=int(getattr(tq, "window2_hours", 12) or 12),
+            max_posts_window2=int(getattr(tq, "max_posts_window2", 2) or 2),
+        )
+        self.topic_saturation_cfg = SaturationCfg(
+            lookback_hours=int(getattr(ts, "lookback_hours", 12) or 12),
+            max_topic_share=float(getattr(ts, "max_topic_share", 0.40) or 0.40),
+            min_posts=int(getattr(ts, "min_posts", 5) or 5),
+        )
+        self.delay_cfg = DelayCfg(
+            min_minutes=int(getattr(dd, "min_minutes", 10) or 10),
+            max_minutes=int(getattr(dd, "max_minutes", 20) or 20),
+        )
+        self.high_trust_sources = list(getattr(sw, "high_trust_sources", []) or [])
+
     def run_once(self) -> None:
         inserted = embedded = semantic_dups = scored = approved = posted = 0
         now_utc = datetime.now(timezone.utc)
@@ -78,7 +101,7 @@ class NewsPipeline:
 
         try:
             if posted < self.cfg.posting.max_posts_per_run:
-                posted += self._post_pending_roots(only_last_hours=cutoff_hours, limit=1)
+                posted += self._post_pending_roots(only_last_hours=cutoff_hours, limit=max(1, self.cfg.posting.max_posts_per_run - posted))
         except Exception:
             log.exception("Pre-post pending roots failed")
 
@@ -86,11 +109,7 @@ class NewsPipeline:
 
         for it in items:
             h = self.exact.make_hash(it.title, it.link)
-            published_iso = (
-                it.published_at.astimezone(timezone.utc).isoformat(timespec="seconds")
-                if it.published_at
-                else None
-            )
+            published_iso = it.published_at.astimezone(timezone.utc).isoformat(timespec="seconds") if it.published_at else None
 
             is_new = self.repo.upsert_item(
                 item_hash=h,
@@ -145,13 +164,8 @@ class NewsPipeline:
 
             if self.text_processing_enabled and self.lexical and profile is not None:
                 try:
-                    since_iso = (
-                        datetime.now(timezone.utc) - timedelta(hours=self.matching_window_hours)
-                    ).isoformat(timespec="seconds")
-                    recent_items = self.repo.get_recent_items_for_matching(
-                        since_iso=since_iso,
-                        limit=self.max_matching_candidates,
-                    )
+                    since_iso = (datetime.now(timezone.utc) - timedelta(hours=self.matching_window_hours)).isoformat(timespec="seconds")
+                    recent_items = self.repo.get_recent_items_for_matching(since_iso=since_iso, limit=self.max_matching_candidates)
                     lexical_candidates = [
                         LexicalCandidate(
                             item_hash=str(r.get("item_hash") or ""),
@@ -178,11 +192,7 @@ class NewsPipeline:
                 except Exception:
                     log.exception("Lexical matching failed")
 
-            event_decision = (
-                self.event_matcher.decide(semantic_match_hash, semantic_match_score, lexical_match)
-                if (self.event_matcher and lexical_match is not None)
-                else None
-            )
+            event_decision = self.event_matcher.decide(semantic_match_hash, semantic_match_score, lexical_match) if (self.event_matcher and lexical_match is not None) else None
 
             dup_of = None
             dup_score = float(semantic_match_score or 0.0) if semantic_match_hash else None
@@ -193,10 +203,7 @@ class NewsPipeline:
             if event_decision is not None:
                 if event_decision.match_type == "duplicate":
                     dup_of = event_decision.matched_item_hash
-                    dup_score = max(
-                        float(semantic_match_score or 0.0),
-                        float(event_decision.combined_score or 0.0),
-                    )
+                    dup_score = max(float(semantic_match_score or 0.0), float(event_decision.combined_score or 0.0))
                     semantic_dups += 1
                 elif event_decision.match_type == "same_event":
                     same_event_of = event_decision.matched_item_hash
@@ -218,87 +225,83 @@ class NewsPipeline:
             if dup_of is not None:
                 continue
 
-            decision = self.postmaker.make(
-                title=it.title,
-                summary=it.summary,
-                source=it.source,
-                url=it.link,
-            )
+            decision = self.postmaker.make(title=it.title, summary=it.summary, source=it.source, url=it.link)
             if not decision:
                 continue
             scored += 1
 
-            should_post = bool(
-                decision.should_post and decision.score >= self.score_threshold and decision.post_text
-            )
-            if should_post:
-                approved += 1
-
             cat_slug = (getattr(decision, "category", "") or "").strip() or "other"
             cat_id = self.repo.category_id(cat_slug) or self.repo.category_id("other")
             wrap_rule = self.wrap_category_map.get(cat_slug)
-            requested_mode = (getattr(decision, "publish_mode", "") or "digest").strip() or "digest"
-            effective_mode = requested_mode
-            status_override = None
-            wrap_name = None
+            root_hash = same_event_of or h
+            cluster_rows = self.repo.get_cluster_rows(root_hash=root_hash, lookback_hours=max(self.matching_window_hours, 48))
+            source_count = self.repo.get_event_source_count(root_hash=root_hash, event_key=getattr(decision, "event_key", None))
+            topic_key = getattr(decision, "topic_key", "") or getattr(decision, "event_key", "") or h[:16]
+            topic_history = self.repo.get_topic_post_history(topic_key=topic_key, window_hours=[self.topic_quota_cfg.window1_hours, self.topic_quota_cfg.window2_hours])
+            topic_mix = self.repo.get_topic_share(topic_key=topic_key, lookback_hours=self.topic_saturation_cfg.lookback_hours)
 
-            if same_event_of and should_post:
-                if wrap_rule:
-                    effective_mode = "wrap_candidate"
-                    status_override = "pending_wrap"
-                    wrap_name = getattr(wrap_rule, "key", None)
-                else:
-                    effective_mode = "digest"
-            elif should_post and wrap_rule and requested_mode == "wrap_candidate":
-                effective_mode = "wrap_candidate"
-                status_override = "pending_wrap"
-                wrap_name = getattr(wrap_rule, "key", None)
-            elif not should_post and requested_mode != "drop":
-                effective_mode = "digest"
+            editorial_decision = decide_publish_mode(
+                decision=decision,
+                item_row={
+                    "title": it.title,
+                    "source": it.source,
+                    "keywords": list(getattr(profile, "keywords", []) or []),
+                    "entities": list(getattr(profile, "entities", []) or []),
+                    "numbers": list(getattr(profile, "numbers", []) or []),
+                    "event_verbs": list(getattr(profile, "event_verbs", []) or []),
+                    "source_count": source_count,
+                },
+                cluster_rows=cluster_rows,
+                topic_history=topic_history,
+                topic_mix=topic_mix,
+                same_event=bool(same_event_of),
+                wrap_rule=wrap_rule,
+                quota_cfg=self.topic_quota_cfg,
+                saturation_cfg=self.topic_saturation_cfg,
+                delay_cfg=self.delay_cfg,
+                high_trust_sources=self.high_trust_sources,
+            )
 
+            llm_gate = bool(decision.should_post and decision.score >= self.score_threshold and decision.post_text)
+            should_post = bool(editorial_decision.should_post and llm_gate)
+            if should_post:
+                approved += 1
+
+            wrap_name = getattr(wrap_rule, "key", None) if editorial_decision.mode == "wrap" and wrap_rule else None
             self.repo.set_score_and_posttext(
                 item_hash=h,
                 score=decision.score,
-                should_post=should_post,
+                should_post=should_post or editorial_decision.mode == "wrap",
                 post_text=decision.post_text if decision.post_text else None,
                 why=decision.why,
                 category_id=cat_id,
                 tier=getattr(decision, "tier", "C"),
-                publish_mode=effective_mode,
+                publish_mode=getattr(decision, "publish_mode", "digest"),
                 event_key=getattr(decision, "event_key", ""),
                 novelty_score=getattr(decision, "novelty_score", 0.0),
                 impact_score=getattr(decision, "impact_score", 0.0),
                 ua_relevance_score=getattr(decision, "ua_relevance_score", 0.0),
                 wrap_name=wrap_name,
-                status=status_override,
+                status=editorial_decision.status,
+                news_type=editorial_decision.news_type,
+                llm_has_new_fact=bool(getattr(decision, "has_new_fact", False)),
+                topic_key=editorial_decision.topic_key,
+                decision_mode=editorial_decision.mode,
+                decision_reasons=editorial_decision.reasons,
+                delay_until_utc=editorial_decision.delay_until_utc,
+                source_trust=editorial_decision.source_trust,
+                source_count=editorial_decision.source_count,
             )
 
-            if should_post and effective_mode == "post" and posted < self.cfg.posting.max_posts_per_run:
-                ok = self._post_now(
-                    item_hash=h,
-                    title=it.title,
-                    source=it.source,
-                    link=it.link,
-                    image_url=getattr(it, "image_url", None),
-                    post_text=decision.post_text,
-                    category_slug=cat_slug,
-                )
-                if ok:
-                    posted += 1
+        if posted < self.cfg.posting.max_posts_per_run:
+            posted += self._post_pending_roots(only_last_hours=cutoff_hours, limit=max(0, self.cfg.posting.max_posts_per_run - posted))
 
         if posted < self.cfg.posting.max_posts_per_run:
             posted += self._process_wraps(limit=self.cfg.posting.max_posts_per_run - posted)
 
         log.info(
             "Collected=%d InsertedNew=%d Embedded=%d SemanticDups=%d Scored=%d Approved=%d Posted=%d threshold=%.2f",
-            len(items),
-            inserted,
-            embedded,
-            semantic_dups,
-            scored,
-            approved,
-            posted,
-            self.score_threshold,
+            len(items), inserted, embedded, semantic_dups, scored, approved, posted, self.score_threshold,
         )
 
         removed = self.repo.cleanup_old(self.cfg.db.keep_days)

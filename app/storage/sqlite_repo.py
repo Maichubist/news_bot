@@ -14,7 +14,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-SCHEMA_V4 = """
+SCHEMA_V5 = """
 
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS news_items (
     lexical_score REAL NULL,
     event_match_type TEXT NULL,
     same_event_of TEXT NULL,
+    news_type TEXT NULL,
+    llm_has_new_fact INTEGER NOT NULL DEFAULT 0,
+    topic_key TEXT NULL,
+    decision_mode TEXT NULL,
+    decision_reasons_json TEXT NULL,
+    delay_until_utc TEXT NULL,
+    source_trust TEXT NULL,
+    source_count INTEGER NOT NULL DEFAULT 1,
     FOREIGN KEY(category_id) REFERENCES categories(id)
 );
 
@@ -76,6 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_news_should_post ON news_items(should_post, statu
 CREATE INDEX IF NOT EXISTS idx_news_category ON news_items(category_id);
 CREATE INDEX IF NOT EXISTS idx_news_wrap_status ON news_items(wrap_name, status, created_at_utc);
 CREATE INDEX IF NOT EXISTS idx_news_event_key ON news_items(event_key);
+CREATE INDEX IF NOT EXISTS idx_news_topic_key ON news_items(topic_key, posted_at_utc);
+CREATE INDEX IF NOT EXISTS idx_news_delay_status ON news_items(status, delay_until_utc);
 
 CREATE TABLE IF NOT EXISTS daily_summaries (
     day_utc TEXT PRIMARY KEY,
@@ -114,6 +124,7 @@ DESIRED_COLS = [
     "scored_at_utc", "tier", "publish_mode", "event_key", "novelty_score", "impact_score",
     "ua_relevance_score", "wrap_name", "wrap_post_id", "normalized_text", "keywords_json",
     "entities_json", "numbers_json", "event_verbs_json", "lexical_score", "event_match_type", "same_event_of",
+    "news_type", "llm_has_new_fact", "topic_key", "decision_mode", "decision_reasons_json", "delay_until_utc", "source_trust", "source_count",
 ]
 
 
@@ -133,7 +144,7 @@ class SqliteNewsRepository:
 
     def init_db(self) -> None:
         con = self._connect()
-        con.executescript(SCHEMA_V4)
+        con.executescript(SCHEMA_V5)
         con.commit()
         self._migrate_news_items(con)
 
@@ -141,10 +152,10 @@ class SqliteNewsRepository:
         cols = [r["name"] for r in con.execute("PRAGMA table_info(news_items)").fetchall()]
         if not cols or set(cols) == set(DESIRED_COLS):
             return
-        log.info("Rebuilding DB schema to v4")
+        log.info("Rebuilding DB schema to v5")
         con.executescript(
             """
-            CREATE TABLE IF NOT EXISTS news_items_v4 (
+            CREATE TABLE IF NOT EXISTS news_items_v5 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 item_hash TEXT NOT NULL UNIQUE,
                 source TEXT NOT NULL,
@@ -183,6 +194,14 @@ class SqliteNewsRepository:
                 lexical_score REAL NULL,
                 event_match_type TEXT NULL,
                 same_event_of TEXT NULL,
+                news_type TEXT NULL,
+                llm_has_new_fact INTEGER NOT NULL DEFAULT 0,
+                topic_key TEXT NULL,
+                decision_mode TEXT NULL,
+                decision_reasons_json TEXT NULL,
+                delay_until_utc TEXT NULL,
+                source_trust TEXT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY(category_id) REFERENCES categories(id)
             );
             """
@@ -195,23 +214,25 @@ class SqliteNewsRepository:
         status_expr = "status" if "status" in legacy else "'new'"
         con.execute(
             f"""
-            INSERT OR IGNORE INTO news_items_v4 (
+            INSERT OR IGNORE INTO news_items_v5 (
                 item_hash, source, title, link, summary, image_url, published_at_utc, created_at_utc,
                 posted_at_utc, status, category_id, embedding_blob, embedding_dim, embedding_model,
                 dup_of, dup_score, score, should_post, post_text, why_json, scored_at_utc,
                 tier, publish_mode, event_key, novelty_score, impact_score, ua_relevance_score,
-                wrap_name, wrap_post_id, normalized_text, keywords_json, entities_json, numbers_json, event_verbs_json, lexical_score, event_match_type, same_event_of
+                wrap_name, wrap_post_id, normalized_text, keywords_json, entities_json, numbers_json, event_verbs_json, lexical_score, event_match_type, same_event_of,
+                news_type, llm_has_new_fact, topic_key, decision_mode, decision_reasons_json, delay_until_utc, source_trust, source_count
             )
             SELECT
                 item_hash, source, title, link, summary, {img_expr}, published_at_utc, created_at_utc,
                 posted_at_utc, {status_expr}, {cat_expr}, {emb_expr}, embedding_dim, embedding_model,
                 dup_of, dup_score, score, COALESCE(should_post, 0), post_text, {why_expr}, scored_at_utc,
-                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                NULL, 0, NULL, NULL, NULL, NULL, NULL, 1
             FROM news_items
             """
         )
         con.execute("DROP TABLE news_items")
-        con.execute("ALTER TABLE news_items_v4 RENAME TO news_items")
+        con.execute("ALTER TABLE news_items_v5 RENAME TO news_items")
         con.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_news_status_created ON news_items(status, created_at_utc);
@@ -221,6 +242,8 @@ class SqliteNewsRepository:
             CREATE INDEX IF NOT EXISTS idx_news_category ON news_items(category_id);
             CREATE INDEX IF NOT EXISTS idx_news_wrap_status ON news_items(wrap_name, status, created_at_utc);
             CREATE INDEX IF NOT EXISTS idx_news_event_key ON news_items(event_key);
+CREATE INDEX IF NOT EXISTS idx_news_topic_key ON news_items(topic_key, posted_at_utc);
+CREATE INDEX IF NOT EXISTS idx_news_delay_status ON news_items(status, delay_until_utc);
             """
         )
         con.commit()
@@ -361,6 +384,14 @@ class SqliteNewsRepository:
         ua_relevance_score: float | None = None,
         wrap_name: str | None = None,
         status: str | None = None,
+        news_type: str | None = None,
+        llm_has_new_fact: bool | None = None,
+        topic_key: str | None = None,
+        decision_mode: str | None = None,
+        decision_reasons: List[str] | None = None,
+        delay_until_utc: str | None = None,
+        source_trust: str | None = None,
+        source_count: int | None = None,
     ) -> None:
         con = self._connect()
         con.execute(
@@ -368,12 +399,15 @@ class SqliteNewsRepository:
             UPDATE news_items
             SET score=?, should_post=?, post_text=?, why_json=?, scored_at_utc=?, category_id=?,
                 tier=?, publish_mode=?, event_key=?, novelty_score=?, impact_score=?, ua_relevance_score=?,
-                wrap_name=?, status=COALESCE(?, status)
+                wrap_name=?, status=COALESCE(?, status), news_type=?, llm_has_new_fact=?, topic_key=?,
+                decision_mode=?, decision_reasons_json=?, delay_until_utc=?, source_trust=?, source_count=COALESCE(?, source_count)
             WHERE item_hash=?
             """,
             (
                 float(score), 1 if should_post else 0, post_text, json.dumps(why[:6], ensure_ascii=False), utc_now_iso(), category_id,
-                tier, publish_mode, event_key, novelty_score, impact_score, ua_relevance_score, wrap_name, status, item_hash,
+                tier, publish_mode, event_key, novelty_score, impact_score, ua_relevance_score, wrap_name, status,
+                news_type, 1 if llm_has_new_fact else 0, topic_key, decision_mode, json.dumps((decision_reasons or [])[:10], ensure_ascii=False),
+                delay_until_utc, source_trust, source_count, item_hash,
             ),
         )
         con.commit()
@@ -422,13 +456,14 @@ class SqliteNewsRepository:
             SELECT ni.*, c.slug AS category_slug, c.title AS category_title, c.hashtag AS category_hashtag
             FROM news_items ni
             LEFT JOIN categories c ON c.id = ni.category_id
-            WHERE status='new' AND dup_of IS NULL AND should_post=1 AND post_text IS NOT NULL
-              AND COALESCE(publish_mode,'post')='post'
+            WHERE status='pending_post' AND dup_of IS NULL AND should_post=1 AND post_text IS NOT NULL
+              AND COALESCE(decision_mode, publish_mode,'post')='post'
+              AND (delay_until_utc IS NULL OR delay_until_utc <= ?)
               AND (published_at_utc IS NULL OR published_at_utc >= ?)
             ORDER BY created_at_utc ASC
             LIMIT ?
             """,
-            (cutoff_iso, limit),
+            (utc_now_iso(), cutoff_iso, limit),
         ).fetchall()
 
     def pick_wrap_candidates(self, wrap_name: str, lookback_hours: int, limit: int = 20):
@@ -470,6 +505,79 @@ class SqliteNewsRepository:
         )
         con.commit()
         return int(cur.lastrowid)
+
+    def get_cluster_rows(self, root_hash: str, lookback_hours: int = 48) -> List[Dict[str, Any]]:
+        con = self._connect()
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=int(lookback_hours))).isoformat(timespec="seconds")
+        rows = con.execute(
+            """
+            SELECT item_hash, source, title, created_at_utc, published_at_utc, keywords_json, entities_json, numbers_json, event_verbs_json
+            FROM news_items
+            WHERE (item_hash=? OR same_event_of=? OR event_key=(SELECT event_key FROM news_items WHERE item_hash=? LIMIT 1))
+              AND COALESCE(created_at_utc, published_at_utc) >= ?
+            ORDER BY COALESCE(published_at_utc, created_at_utc) ASC
+            """,
+            (root_hash, root_hash, root_hash, cutoff_iso),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            out.append({
+                "item_hash": r["item_hash"],
+                "source": r["source"],
+                "title": r["title"],
+                "created_at_utc": r["created_at_utc"],
+                "published_at_utc": r["published_at_utc"],
+                "keywords": json.loads(r["keywords_json"] or "[]"),
+                "entities": json.loads(r["entities_json"] or "[]"),
+                "numbers": json.loads(r["numbers_json"] or "[]"),
+                "event_verbs": json.loads(r["event_verbs_json"] or "[]"),
+            })
+        return out
+
+    def get_topic_post_history(self, topic_key: str, window_hours: List[int]) -> Dict[str, int]:
+        con = self._connect()
+        now = datetime.now(timezone.utc)
+        out: Dict[str, int] = {}
+        for hours in window_hours:
+            cutoff = (now - timedelta(hours=int(hours))).isoformat(timespec="seconds")
+            row = con.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM news_items
+                WHERE topic_key=?
+                  AND status='posted'
+                  AND posted_at_utc IS NOT NULL
+                  AND posted_at_utc >= ?
+                """,
+                (topic_key, cutoff),
+            ).fetchone()
+            out[f"{int(hours)}h"] = int(row["c"] or 0) if row else 0
+        return out
+
+    def get_topic_share(self, topic_key: str, lookback_hours: int) -> Dict[str, int]:
+        con = self._connect()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=int(lookback_hours))).isoformat(timespec="seconds")
+        total = con.execute(
+            "SELECT COUNT(*) AS c FROM news_items WHERE status='posted' AND posted_at_utc IS NOT NULL AND posted_at_utc >= ?",
+            (cutoff,),
+        ).fetchone()
+        topic = con.execute(
+            "SELECT COUNT(*) AS c FROM news_items WHERE status='posted' AND topic_key=? AND posted_at_utc IS NOT NULL AND posted_at_utc >= ?",
+            (topic_key, cutoff),
+        ).fetchone()
+        return {"total_posts": int(total["c"] or 0) if total else 0, "topic_posts": int(topic["c"] or 0) if topic else 0}
+
+    def get_event_source_count(self, root_hash: str, event_key: str | None = None) -> int:
+        con = self._connect()
+        row = con.execute(
+            """
+            SELECT COUNT(DISTINCT source) AS c
+            FROM news_items
+            WHERE item_hash=? OR same_event_of=? OR (? IS NOT NULL AND event_key=?)
+            """,
+            (root_hash, root_hash, event_key, event_key),
+        ).fetchone()
+        return int(row["c"] or 0) if row else 0
 
     def daily_summary_exists(self, day_utc: str) -> bool:
         con = self._connect()
