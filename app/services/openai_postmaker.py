@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from app.text.cleaner import clean_post_text
+
 log = logging.getLogger("editor.openai")
 
 
@@ -70,7 +72,7 @@ class OpenAINewsPostMaker:
                 "novelty_score": {"type": "number", "minimum": 0, "maximum": 1},
                 "impact_score": {"type": "number", "minimum": 0, "maximum": 1},
                 "ua_relevance_score": {"type": "number", "minimum": 0, "maximum": 1},
-                "news_type": {"type": "string", "enum": ["hard_news", "followup", "commentary", "analysis", "noise", "promo"]},
+                "news_type": {"type": "string", "enum": ["hard_news", "followup", "analysis", "commentary", "feature", "advice", "promo", "noise"]},
                 "has_new_fact": {"type": "boolean"},
                 "is_breaking": {"type": "boolean"},
             },
@@ -145,7 +147,7 @@ class OpenAINewsPostMaker:
             return PostDecision(
                 score=float(obj.get("score") or 0.0),
                 should_post=bool(obj.get("should_post")),
-                post_text=post_text,
+                post_text=clean_post_text(post_text),
                 why=[str(x) for x in (obj.get("why") or [])][:6],
                 category=str(obj.get("category") or "other").strip() or "other",
                 tier=str(obj.get("tier") or "C").strip() or "C",

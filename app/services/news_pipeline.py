@@ -8,8 +8,9 @@ from typing import Dict, Optional, Tuple
 
 from app.dedup.lexical import LexicalCandidate
 from app.dedup.semantic import pack_vec
-from app.services.editorial_policy import DelayCfg, TopicQuotaCfg, SaturationCfg, decide_publish_mode
+from app.services.editorial_policy import DelayCfg, TopicQuotaCfg, SaturationCfg, decide_publish_mode, is_today_news
 from app.text.summary import is_good_summary, truncate
+from app.text.cleaner import clean_post_text
 
 log = logging.getLogger("services.pipeline")
 
@@ -108,6 +109,9 @@ class NewsPipeline:
         items = self.rss.fetch(self.cfg.sources)
 
         for it in items:
+            if not is_today_news(it.published_at, now_utc):
+                continue
+
             h = self.exact.make_hash(it.title, it.link)
             published_iso = it.published_at.astimezone(timezone.utc).isoformat(timespec="seconds") if it.published_at else None
 
@@ -250,6 +254,7 @@ class NewsPipeline:
                     "numbers": list(getattr(profile, "numbers", []) or []),
                     "event_verbs": list(getattr(profile, "event_verbs", []) or []),
                     "source_count": source_count,
+                    "published_at": it.published_at,
                 },
                 cluster_rows=cluster_rows,
                 topic_history=topic_history,
@@ -272,7 +277,7 @@ class NewsPipeline:
                 item_hash=h,
                 score=decision.score,
                 should_post=should_post or editorial_decision.mode == "wrap",
-                post_text=decision.post_text if decision.post_text else None,
+                post_text=clean_post_text(decision.post_text) if decision.post_text else None,
                 why=decision.why,
                 category_id=cat_id,
                 tier=getattr(decision, "tier", "C"),
@@ -320,7 +325,7 @@ class NewsPipeline:
         category_slug: str,
     ) -> bool:
         try:
-            text = (post_text or "").strip()
+            text = clean_post_text((post_text or "").strip())
             if not text:
                 return False
 

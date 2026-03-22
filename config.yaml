@@ -1,53 +1,51 @@
 telegram:
   chat_id: -1003750698363
   admin_chat_id: 404237030
-
 openai:
   model: text-embedding-3-small
-
 categories:
-  - slug: war
-    title: "Війна"
-    hashtag: "#війна"
-  - slug: politics
-    title: "Політика"
-    hashtag: "#політика"
-  - slug: economy
-    title: "Економіка"
-    hashtag: "#економіка"
-  - slug: technology
-    title: "Технології"
-    hashtag: "#технології"
-  - slug: business
-    title: "Бізнес"
-    hashtag: "#бізнес"
-  - slug: society
-    title: "Суспільство"
-    hashtag: "#суспільство"
-  - slug: science
-    title: "Наука"
-    hashtag: "#наука"
-  - slug: other
-    title: "Інше"
-    hashtag: "#інше"
-
+- slug: war
+  title: Війна
+  hashtag: '#війна'
+- slug: politics
+  title: Політика
+  hashtag: '#політика'
+- slug: economy
+  title: Економіка
+  hashtag: '#економіка'
+- slug: technology
+  title: Технології
+  hashtag: '#технології'
+- slug: business
+  title: Бізнес
+  hashtag: '#бізнес'
+- slug: society
+  title: Суспільство
+  hashtag: '#суспільство'
+- slug: science
+  title: Наука
+  hashtag: '#наука'
+- slug: other
+  title: Інше
+  hashtag: '#інше'
 llm:
   post_model: gpt-4o-mini
   digest_model: gpt-4o-mini
   wrap_model: gpt-4o-mini
-
   post_prompt: |
-    Ти редактор новинного Telegram-каналу.
+    Ти жорсткий редактор новинного Telegram-каналу.
 
     Поверни лише JSON.
-    Не інтерпретуй подію. Не пиши висновків, прогнозів, "це означає" або емоційних формулювань.
-    Пиши тільки перевірювані факти з наданого тексту.
+    Пиши тільки факти з вхідного тексту.
+    Заборонено: інтерпретації, причинність, прогнози, пафос, узагальнення, припущення.
+    Якщо факт не підтверджений у тексті — не пиши його.
 
     Завдання:
-    1) класифікуй матеріал у news_type: hard_news | followup | commentary | analysis | noise | promo
-    2) оціни, чи в тексті є новий факт: нові цифри, нова дія, новий актор або новий наслідок
-    3) напиши короткий пост українською у 1-2 реченнях, максимум 320 символів
-    4) якщо це noise/promo/commentary/analysis і короткий фактологічний пост не потрібен — post_text залиш порожнім рядком
+    1) класифікуй матеріал у news_type: hard_news | followup | analysis | commentary | feature | advice | promo | noise
+    2) should_post=true тільки якщо це hard_news
+    3) has_new_fact=true тільки якщо є нові цифри, новий актор, нова дія або новий результат
+    4) post_text: 1-2 короткі речення українською, максимум 280 символів, без вступів і висновків
+    5) якщо це не hard_news — post_text залиш порожнім рядком
 
     Формат JSON:
     - score: 0..1
@@ -62,22 +60,20 @@ llm:
     - novelty_score: 0..1
     - impact_score: 0..1
     - ua_relevance_score: 0..1
-    - news_type: hard_news | followup | commentary | analysis | noise | promo
+    - news_type: hard_news | followup | analysis | commentary | feature | advice | promo | noise
     - has_new_fact: boolean
     - is_breaking: boolean
 
     Правила:
-    - hard_news = нове рішення, атака, санкції, угода, офіційна дія, реліз даних, фінансовий результат, кадрове рішення, аварія або інцидент.
-    - followup = апдейт уже відомої теми без великого нового факту.
-    - commentary/analysis = оцінка, колонка, пояснення, аналітика, інтерв'ю.
-    - noise/promo = реклама, добірка, подкаст, відео, розсилка, вакансія, купони, сервісні сторінки.
-    - У post_text не додавай нічого, чого прямо немає у вхідному тексті.
-    - Без слів "важливо", "історично", "різко", "серйозний сигнал" та подібного пафосу.
+    - hard_news = нова офіційна дія, рішення, заява про конкретну дію, атака, санкції, угода, звітність, реліз даних, кадрове рішення, аварія, інцидент.
+    - followup = апдейт уже відомої теми без достатньо нового факту для окремого поста.
+    - analysis/commentary/feature/advice = пояснення, оцінка, колонка, огляд, порада, інтерв'ю.
+    - promo/noise = реклама, добірка, відео, подкаст, розсилка, вакансія, купони, сервісний текст.
+    - Не використовуй фрази: "це означає", "це свідчить", "експерти вважають".
     - Не пиши слово "Заголовок".
 
     Новина:
     {news_text}
-
   wrap_prompt: |
     Ти редактор Telegram-каналу. Нижче кілька новин однієї хвилі для {wrap_name}.
     Зроби один агрегований пост українською.
@@ -91,7 +87,6 @@ llm:
 
     Новини:
     {items}
-
   digest_prompt: |
     Ти редактор-аналітик щоденного Telegram-дайджесту.
     Зроби підсумок дня: {day_label}
@@ -109,7 +104,6 @@ llm:
 
     Пости за день:
     {posts}
-
   market_wrap_prompt: |
     Ти редактор українського Telegram-каналу. Нижче кілька новин однієї ринкової хвилі для {wrap_name}.
     Зроби один сильний агрегований пост українською.
@@ -124,7 +118,6 @@ llm:
 
     Новини:
     {items}
-
   geopolitical_wrap_prompt: |
     Ти редактор українського Telegram-каналу. Нижче кілька новин однієї геополітичної хвилі для {wrap_name}.
     Зроби один агрегований пост українською.
@@ -139,7 +132,6 @@ llm:
 
     Новини:
     {items}
-
   tech_wrap_prompt: |
     Ти редактор українського Telegram-каналу. Нижче кілька новин однієї технологічної хвилі для {wrap_name}.
     Зроби один агрегований пост українською.
@@ -154,191 +146,145 @@ llm:
 
     Новини:
     {items}
-
 sources:
-  - name: "Reuters World"
-    url: "https://feeds.reuters.com/Reuters/worldNews"
-
-  - name: "Reuters Business"
-    url: "https://feeds.reuters.com/reuters/businessNews"
-
-  - name: "Associated Press"
-    url: "https://apnews.com/rss"
-
-  - name: "CNN World"
-    url: "http://rss.cnn.com/rss/edition_world.rss"
-
-  - name: "Al Jazeera"
-    url: "https://www.aljazeera.com/xml/rss/all.xml"
-
-  - name: "The Guardian World"
-    url: "https://www.theguardian.com/world/rss"
-
-  - name: "Financial Times"
-    url: "https://www.ft.com/rss/home"
-
-  - name: "Bloomberg"
-    url: "https://feeds.bloomberg.com/markets/news.rss"
-    deny_url_regex:
-      - '(?i)/video'
-
-  - name: "CNBC"
-    url: "https://www.cnbc.com/id/100003114/device/rss/rss.html"
-
-  - name: "WSJ World"
-    url: "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
-
-  - name: "TechCrunch"
-    url: "https://techcrunch.com/feed/"
-
-  - name: "Wired"
-    url: "https://www.wired.com/feed/rss"
-
-  - name: "Ars Technica"
-    url: "http://feeds.arstechnica.com/arstechnica/index"
-
-  - name: "Engadget"
-    url: "https://www.engadget.com/rss.xml"
-
-  - name: "MIT Technology Review"
-    url: "https://www.technologyreview.com/feed/"
-
-  - name: "VentureBeat AI"
-    url: "https://venturebeat.com/category/ai/feed/"
-
-  - name: "Defense News"
-    url: "https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml"
-
-  - name: "Politico"
-    url: "https://www.politico.com/rss/politics08.xml"
-
-
-# ---------- UA ----------
-  - name: "Українська правда"
-    url: "https://www.pravda.com.ua/rss/"
-
-  - name: "Економічна правда"
-    url: "https://www.epravda.com.ua/rss/"
-
-  - name: "НВ"
-    url: "https://nv.ua/rss.xml"
-
-  - name: "Liga.net"
-    url: "https://www.liga.net/rss/all.xml"
-
-  - name: "Forbes Ukraine"
-    url: "https://forbes.ua/rss"
-
-  - name: "Суспільне"
-    url: "https://suspilne.media/rss.xml"
-
-  - name: "Бабель"
-    url: "https://babel.ua/rss.xml"
-
-
+- name: Reuters World
+  url: https://feeds.reuters.com/Reuters/worldNews
+- name: Reuters Business
+  url: https://feeds.reuters.com/reuters/businessNews
+- name: Associated Press
+  url: https://apnews.com/rss
+- name: Bloomberg
+  url: https://feeds.bloomberg.com/markets/news.rss
+  deny_url_regex:
+  - (?i)/video
+- name: Financial Times
+  url: https://www.ft.com/rss/home
+- name: BBC World
+  url: http://feeds.bbci.co.uk/news/world/rss.xml
+- name: CNN World
+  url: http://rss.cnn.com/rss/edition_world.rss
+- name: WSJ World
+  url: https://feeds.a.dj.com/rss/RSSWorldNews.xml
+- name: NYT World
+  url: https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+- name: The Guardian World
+  url: https://www.theguardian.com/world/rss
+- name: Al Jazeera
+  url: https://www.aljazeera.com/xml/rss/all.xml
+- name: CNBC
+  url: https://www.cnbc.com/id/100003114/device/rss/rss.html
+- name: Politico
+  url: https://www.politico.com/rss/politics08.xml
+- name: TechCrunch
+  url: https://techcrunch.com/feed/
+- name: The Verge
+  url: https://www.theverge.com/rss/index.xml
+- name: Wired
+  url: https://www.wired.com/feed/rss
+- name: Ars Technica
+  url: http://feeds.arstechnica.com/arstechnica/index
+- name: Українська правда
+  url: https://www.pravda.com.ua/rss/
+- name: Економічна правда
+  url: https://www.epravda.com.ua/rss/
+- name: НВ
+  url: https://nv.ua/rss.xml
+- name: Liga.net
+  url: https://www.liga.net/rss/all.xml
+- name: Forbes Ukraine
+  url: https://forbes.ua/rss
+- name: Суспільне
+  url: https://suspilne.media/rss.xml
+- name: Бабель
+  url: https://babel.ua/rss.xml
 filters:
   deny_title_regex:
-    - '(?i)\b(sponsored|advertorial|partner(ed)? content|paid post|promotion)\b'
-    - '(?i)\b(podcast|video|watch|listen)\b'
-    - '(?i)\b(newsletter|subscribe|subscription)\b'
-    - '(?i)\b(deals?|coupon|sale|% off|discount|promo code)\b'
-    - '(?i)\b(opinion|editorial|column)\b'
-
+  - (?i)\b(sponsored|advertorial|partner(ed)? content|paid post|promotion)\b
+  - (?i)\b(podcast|video|watch|listen)\b
+  - (?i)\b(newsletter|subscribe|subscription)\b
+  - (?i)\b(deals?|coupon|sale|% off|discount|promo code)\b
+  - (?i)\b(opinion|editorial|column)\b
   deny_url_regex:
-    - '(?i)/video'
-    - '(?i)/podcast'
-    - '(?i)/newsletters?'
-    - '(?i)/subscribe'
-    - '(?i)/deals?'
-    - '(?i)/coupons?'
-    - '(?i)\butm_'
-
+  - (?i)/video
+  - (?i)/podcast
+  - (?i)/newsletters?
+  - (?i)/subscribe
+  - (?i)/deals?
+  - (?i)/coupons?
+  - (?i)\butm_
   deny_summary_regex:
-    - '(?i)\b(sponsored|advertorial|partner(ed)? content|paid post)\b'
-
+  - (?i)\b(sponsored|advertorial|partner(ed)? content|paid post)\b
 posting:
-  max_posts_per_run: 10
+  max_posts_per_run: 6
   only_last_hours: 24
   include_source_name: true
   cluster_wait_minutes: 5
   breaking_sources_threshold: 3
-
   wrap_rules:
-    - key: economy_wrap
-      title: "Market Wrap"
-      categories:
-        - economy
-        - business
-      min_items: 3
-      lookback_hours: 6
-      cooldown_minutes: 90
-      min_sources: 2
-      source_label: "Market Wrap"
-      hashtag_slug: economy
-      prompt_template_key: market_wrap_prompt
-
-    - key: geopolitics_wrap
-      title: "Geopolitics Wrap"
-      categories:
-        - war
-        - politics
-      min_items: 3
-      lookback_hours: 6
-      cooldown_minutes: 120
-      min_sources: 2
-      source_label: "Geopolitics Wrap"
-      hashtag_slug: war
-      prompt_template_key: geopolitical_wrap_prompt
-
-    - key: technology_wrap
-      title: "Tech Wrap"
-      categories:
-        - technology
-        - science
-      min_items: 3
-      lookback_hours: 8
-      cooldown_minutes: 180
-      min_sources: 2
-      source_label: "Tech Wrap"
-      hashtag_slug: technology
-      prompt_template_key: tech_wrap_prompt
-
+  - key: economy_wrap
+    title: Market Wrap
+    categories:
+    - economy
+    - business
+    min_items: 3
+    lookback_hours: 6
+    cooldown_minutes: 90
+    min_sources: 2
+    source_label: Market Wrap
+    hashtag_slug: economy
+    prompt_template_key: market_wrap_prompt
+  - key: geopolitics_wrap
+    title: Geopolitics Wrap
+    categories:
+    - war
+    - politics
+    min_items: 3
+    lookback_hours: 6
+    cooldown_minutes: 120
+    min_sources: 2
+    source_label: Geopolitics Wrap
+    hashtag_slug: war
+    prompt_template_key: geopolitical_wrap_prompt
+  - key: technology_wrap
+    title: Tech Wrap
+    categories:
+    - technology
+    - science
+    min_items: 3
+    lookback_hours: 8
+    cooldown_minutes: 180
+    min_sources: 2
+    source_label: Tech Wrap
+    hashtag_slug: technology
+    prompt_template_key: tech_wrap_prompt
 images:
   og_fetch: true
-
 db:
   path: data/news.db
   keep_days: 14
-
 network:
   timeout_sec: 25
   verify: certifi
-
 embeddings:
   window_hours: 24
   threshold: 0.84
   require_good_summary: false
-
 app:
   sleep_between_posts_sec: 1.2
   log_level: INFO
-
 monitor:
   every_seconds: 120
   command_poll_seconds: 2
-
 translate:
   enabled: false
   model: gpt-4o-mini
   max_chars_summary: 350
-
 analytics:
   enabled: true
   daily_report_enabled: true
   commands_enabled: true
   report_hour_local: 22
   timezone: Europe/Kyiv
-
 text_processing:
   enabled: true
   matching_window_hours: 36
@@ -350,34 +296,32 @@ text_processing:
   same_event_combined_threshold: 0.68
   same_event_semantic_threshold: 0.82
   same_event_lexical_threshold: 0.28
-
 dedup:
   semantic_duplicate_threshold: 0.86
   semantic_same_event_threshold: 0.68
   lexical_same_event_threshold: 0.45
-
 editorial:
   min_post_score: 0.84
-
   topic_quota:
     window1_hours: 4
     max_posts_window1: 1
     window2_hours: 12
     max_posts_window2: 2
-
   topic_saturation:
     lookback_hours: 12
-    max_topic_share: 0.40
+    max_topic_share: 0.4
     min_posts: 5
-
   delay_non_breaking:
     min_minutes: 10
     max_minutes: 20
-
   source_weighting:
     high_trust_sources:
-      - Reuters
-      - Bloomberg
-      - Financial Times
-      - Associated Press
-      - AP
+    - Reuters
+    - Associated Press
+    - AP
+    - Bloomberg
+    - Financial Times
+    - FT
+    - Українська правда
+    - Економічна правда
+    - Суспільне
