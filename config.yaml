@@ -212,6 +212,30 @@ sources:
   - name: "Politico"
     url: "https://www.politico.com/rss/politics08.xml"
 
+
+# ---------- UA ----------
+  - name: "Українська правда"
+    url: "https://www.pravda.com.ua/rss/"
+
+  - name: "Економічна правда"
+    url: "https://www.epravda.com.ua/rss/"
+
+  - name: "НВ"
+    url: "https://nv.ua/rss.xml"
+
+  - name: "Liga.net"
+    url: "https://www.liga.net/rss/all.xml"
+
+  - name: "Forbes Ukraine"
+    url: "https://forbes.ua/rss"
+
+  - name: "Суспільне"
+    url: "https://suspilne.media/rss.xml"
+
+  - name: "Бабель"
+    url: "https://babel.ua/rss.xml"
+
+
 filters:
   deny_title_regex:
     - '(?i)\b(sponsored|advertorial|partner(ed)? content|paid post|promotion)\b'
