@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import html
 import os
@@ -83,12 +84,14 @@ class TelegramClient:
         text: str,
         disable_preview: bool = False,
         chat_id: int | None = None,
+        reply_markup: dict | None = None,
     ) -> Tuple[bool, Optional[int]]:
 
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
 
+        chunks = self._split_text(text)
         first_msg_id = None
-        for chunk in self._split_text(text):
+        for i, chunk in enumerate(chunks):
             formatted_text = self._format_message(chunk)
             payload = {
                 "chat_id": chat_id if chat_id is not None else self.chat_id,
@@ -96,6 +99,9 @@ class TelegramClient:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": disable_preview,
             }
+            # Keyboard goes on the last chunk so it sits under the visible end of the post.
+            if reply_markup is not None and i == len(chunks) - 1:
+                payload["reply_markup"] = reply_markup
 
             try:
                 r = self.http.post(url, json=payload)
@@ -118,6 +124,10 @@ class TelegramClient:
                 msg_id = data.get("result", {}).get("message_id")
                 if first_msg_id is None:
                     first_msg_id = msg_id
+                # When a keyboard is attached, the caller needs the id of the
+                # message that carries it (the last chunk) to edit it later.
+                if reply_markup is not None and i == len(chunks) - 1 and msg_id is not None:
+                    first_msg_id = msg_id
             except Exception:
                 pass
 
@@ -130,6 +140,7 @@ class TelegramClient:
         disable_preview: bool = True,
         filename: str = "image.jpg",
         chat_id: int | None = None,
+        reply_markup: dict | None = None,
     ) -> Tuple[bool, Optional[int]]:
         url = f"https://api.telegram.org/bot{self.token}/sendPhoto"
 
@@ -141,6 +152,8 @@ class TelegramClient:
             "parse_mode": "HTML",
             "disable_web_page_preview": disable_preview,
         }
+        if reply_markup is not None:
+            data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
         files = {
             "photo": (filename, photo_bytes),
         }
@@ -165,11 +178,98 @@ class TelegramClient:
 
         return True, msg_id
 
-    def get_updates(self, offset: int | None = None, timeout: int = 0):
+    def send_video_with_id(
+        self,
+        video_bytes: bytes,
+        caption_text: str,
+        filename: str = "video.mp4",
+        chat_id: int | None = None,
+        reply_markup: dict | None = None,
+    ) -> Tuple[bool, Optional[int]]:
+        """
+        Send a video file with HTML caption. Telegram bots accept uploads up to 50 MB;
+        we enforce a smaller cap upstream in the pipeline.
+        """
+        url = f"https://api.telegram.org/bot{self.token}/sendVideo"
+
+        caption = self._format_message(caption_text)
+
+        data = {
+            "chat_id": str(chat_id if chat_id is not None else self.chat_id),
+            "caption": caption,
+            "parse_mode": "HTML",
+            "supports_streaming": "true",
+        }
+        if reply_markup is not None:
+            data["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        files = {
+            "video": (filename, video_bytes),
+        }
+
+        try:
+            r = self.http.post(url, data=data, files=files)
+        except Exception:
+            log.exception("Telegram video request crashed")
+            return False, None
+
+        log.info("Sending TG video size=%dKB caption len=%d", len(video_bytes) // 1024, len(caption_text))
+
+        if not r.ok:
+            log.warning("Telegram video error: %s %s", r.status_code, (r.text or "")[:800])
+            return False, None
+
+        try:
+            dataj = r.json()
+            msg_id = dataj.get("result", {}).get("message_id")
+        except Exception:
+            msg_id = None
+
+        return True, msg_id
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None, show_alert: bool = False) -> bool:
+        url = f"https://api.telegram.org/bot{self.token}/answerCallbackQuery"
+        payload: dict = {"callback_query_id": str(callback_query_id)}
+        if text:
+            payload["text"] = text[:200]
+        if show_alert:
+            payload["show_alert"] = True
+        try:
+            r = self.http.post(url, json=payload)
+        except Exception:
+            log.exception("Telegram answerCallbackQuery crashed")
+            return False
+        if not getattr(r, "ok", False):
+            log.warning("Telegram answerCallbackQuery error: %s %s", r.status_code, (r.text or "")[:400])
+            return False
+        return True
+
+    def edit_message_reply_markup(self, chat_id: int, message_id: int, reply_markup: dict | None = None) -> bool:
+        """Replace or remove (reply_markup=None) the inline keyboard of an existing message."""
+        url = f"https://api.telegram.org/bot{self.token}/editMessageReplyMarkup"
+        payload: dict = {
+            "chat_id": int(chat_id),
+            "message_id": int(message_id),
+            "reply_markup": reply_markup if reply_markup is not None else {"inline_keyboard": []},
+        }
+        try:
+            r = self.http.post(url, json=payload)
+        except Exception:
+            log.exception("Telegram editMessageReplyMarkup crashed")
+            return False
+        if not getattr(r, "ok", False):
+            log.warning("Telegram editMessageReplyMarkup error: %s %s", r.status_code, (r.text or "")[:400])
+            return False
+        return True
+
+    def get_updates(self, offset: int | None = None, timeout: int = 0, allowed_updates: list[str] | None = None):
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         payload = {"timeout": int(timeout)}
         if offset is not None:
             payload["offset"] = int(offset)
+        # "message_reaction" is delivered only when explicitly requested here
+        # (and only if the bot is an admin of the channel).
+        if allowed_updates is not None:
+            payload["allowed_updates"] = list(allowed_updates)
         try:
             r = self.http.post(url, json=payload)
         except Exception:

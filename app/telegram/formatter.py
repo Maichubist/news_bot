@@ -28,7 +28,13 @@ class PostFormatter:
             hashtag = (row.get("category_hashtag") or "").strip() if hasattr(row, "get") else (row["category_hashtag"] or "").strip()
         except Exception:
             hashtag = ""
+        try:
+            embed = (row.get("embed_video_url") or "").strip() if hasattr(row, "get") else (row["embed_video_url"] or "").strip()
+        except Exception:
+            embed = ""
         lines = [base]
+        if embed:
+            lines.extend(["", f"▶️ Відео: {embed}"])
         if hashtag:
             lines.extend(["", hashtag])
         if self.include_source and source and link:

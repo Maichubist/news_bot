@@ -24,10 +24,11 @@ class AnalyticsSnapshot:
 
 
 class AnalyticsService:
-    def __init__(self, cfg, repo, tg):
+    def __init__(self, cfg, repo, tg, engagement=None):
         self.cfg = cfg
         self.repo = repo
         self.tg = tg
+        self.engagement = engagement
         self.tz_name = getattr(cfg.analytics, 'timezone', 'Europe/Zaporozhye')
         self.tz = ZoneInfo(self.tz_name)
         self.report_hour_local = int(getattr(cfg.analytics, 'report_hour_local', 22) or 22)
@@ -78,10 +79,22 @@ class AnalyticsService:
             return
         snapshot = self.build_snapshot_for_today()
         text = self.render_snapshot_text(snapshot)
+        text += self._engagement_block()
         ok, _ = self.tg.send_message_with_id(text, disable_preview=True, chat_id=self.tg.admin_chat_id)
         if ok:
             self.repo.save_analytics_report(day_local=day_local, post_text=text)
             log.info('Daily analytics report sent for %s', day_local)
+
+    def _engagement_block(self) -> str:
+        """Engagement section for the daily report; empty string when unavailable."""
+        if self.engagement is None:
+            return ""
+        try:
+            block = self.engagement.build_report_block()
+        except Exception:
+            log.exception("Engagement report block failed")
+            return ""
+        return f"\n\n{block}" if block else ""
 
     def export_news_items_csv(self) -> Path:
         out = Path('data') / 'exports'

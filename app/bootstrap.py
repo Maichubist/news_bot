@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from app.config import AppConfig
+from app.dedup.clusters import IncrementalClusterer
 from app.dedup.embeddings import OpenAIEmbeddingClient
 from app.dedup.event_matcher import EventMatcher
 from app.dedup.exact import ExactDeduper
@@ -12,11 +13,15 @@ from app.dedup.semantic import SemanticDeduper
 from app.http import RequestsSession, build_verify_option
 from app.rss.fetcher import RssFetcher
 from app.services.analytics_service import AnalyticsService
+from app.services.engagement import EngagementService
+from app.services.moderation import ModerationService
 from app.services.news_pipeline import NewsPipeline
 from app.services.openai_daily_digest import OpenAIDailyDigestMaker
 from app.services.openai_market_wrap import OpenAIMarketWrapMaker
 from app.services.openai_postmaker import OpenAINewsPostMaker
 from app.services.prompt_manager import PromptManager
+from app.services.publisher import ChannelPublisher
+from app.services.ranker import NewsRanker, RankingLLM
 from app.services.telegram_analytics_commands import TelegramAnalyticsCommands
 from app.storage.sqlite_repo import SqliteNewsRepository
 from app.telegram.client import TelegramClient
@@ -50,6 +55,10 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
 
     repo = repo_factory()
 
+    from app.services.news_pipeline import DEFAULT_CLUSTER_WRAP_PROMPT
+    from app.services.openai_postmaker import DEFAULT_CLASSIFY_PROMPT
+    from app.services.ranker import DEFAULT_RANKING_PROMPT
+
     prompt_manager = PromptManager(
         repo_factory=repo_factory,
         defaults={
@@ -59,6 +68,9 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
             "market_wrap_prompt": cfg.llm.market_wrap_prompt,
             "geopolitical_wrap_prompt": cfg.llm.geopolitical_wrap_prompt,
             "tech_wrap_prompt": cfg.llm.tech_wrap_prompt,
+            "classify_prompt": DEFAULT_CLASSIFY_PROMPT,
+            "ranking_prompt": DEFAULT_RANKING_PROMPT,
+            "cluster_wrap_prompt": DEFAULT_CLUSTER_WRAP_PROMPT,
         },
     )
 
@@ -111,17 +123,57 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
         prompt_provider=prompt_manager.get,
     )
 
-    analytics_service = AnalyticsService(cfg=cfg, repo=repo, tg=tg)
+    def engagement_factory(local_repo: SqliteNewsRepository) -> EngagementService:
+        return EngagementService(
+            cfg_engagement=cfg.engagement,
+            repo=local_repo,
+            channel_chat_id=cfg.telegram.chat_id,
+        )
+
+    engagement = engagement_factory(repo)
+    analytics_service = AnalyticsService(cfg=cfg, repo=repo, tg=tg, engagement=engagement)
+
+    publisher = ChannelPublisher(
+        http=http,
+        tg=tg,
+        enable_video=cfg.media.enable_video,
+        max_image_bytes=cfg.media.max_image_bytes,
+        max_video_bytes=cfg.media.max_video_bytes,
+        enable_og_image=cfg.images.og_fetch,
+    )
+
+    def moderation_factory(local_repo: SqliteNewsRepository) -> ModerationService:
+        return ModerationService(
+            cfg_moderation=cfg.moderation,
+            repo=local_repo,
+            tg=tg,
+            formatter=fmt,
+            publisher=publisher,
+            postmaker=postmaker,
+        )
+
+    # Pipeline thread and command-poller thread each need their own repo
+    # (sqlite connections are bound to the creating thread).
+    moderation = moderation_factory(repo)
 
     def command_service_factory() -> TelegramAnalyticsCommands:
         local_repo = repo_factory()
-        local_analytics = AnalyticsService(cfg=cfg, repo=local_repo, tg=tg)
+        local_engagement = engagement_factory(local_repo)
+        local_analytics = AnalyticsService(cfg=cfg, repo=local_repo, tg=tg, engagement=local_engagement)
         return TelegramAnalyticsCommands(
             repo=local_repo,
             tg=tg,
             analytics_service=local_analytics,
             prompt_manager=prompt_manager,
+            moderation=moderation_factory(local_repo),
+            engagement=local_engagement,
         )
+
+    clusterer = IncrementalClusterer(
+        repo=repo,
+        threshold=cfg.clustering.threshold,
+        window_hours=cfg.clustering.window_hours,
+    )
 
     pipeline = NewsPipeline(
         cfg=cfg,
@@ -139,6 +191,29 @@ def build_runtime(config_path: str = "config.yaml") -> AppRuntime:
         digestmaker=digestmaker,
         wrapmaker=wrapmaker,
         prompt_manager=prompt_manager,
+        publisher=publisher,
+        moderation=moderation,
+        engagement=engagement,
+        clusterer=clusterer,
+    )
+
+    # Phase 3: comparative ranking. Attached after construction because the
+    # ranker calls back into the pipeline for winner processing and expiry.
+    ranking_llm = RankingLLM(
+        http=http,
+        api_key=cfg.openai.api_key,
+        model=cfg.ranking.model,
+        prompt_provider=prompt_manager.get,
+    )
+    pipeline.ranker = NewsRanker(
+        cfg_ranking=cfg.ranking,
+        repo=repo,
+        llm=ranking_llm,
+        winner_processor=pipeline.process_ranking_winner,
+        expire_router=pipeline._route_expired_candidate,
+        fallback_min_score=cfg.editorial.min_post_score,
+        origin_lookback_hours=cfg.editorial.origin_balance.lookback_hours,
+        source_count_fn=pipeline._event_source_count,
     )
 
     return AppRuntime(

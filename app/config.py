@@ -95,6 +95,7 @@ class SourceCfg:
     url: str
     deny_title_regex: list[str]
     deny_url_regex: list[str]
+    origin: str = "world"  # "ua" | "world"
 
 
 @dataclass(frozen=True)
@@ -161,17 +162,40 @@ class SourceWeightingCfg:
 
 
 @dataclass(frozen=True)
+class OriginBalanceCfg:
+    enabled: bool
+    lookback_hours: int
+    max_origin_share: float
+    min_posts: int
+    ua_relevance_boost: float
+
+
+@dataclass(frozen=True)
 class EditorialCfg:
     min_post_score: float
     topic_quota: TopicQuotaCfg
     topic_saturation: TopicSaturationCfg
     delay_non_breaking: EditorialDelayCfg
     source_weighting: SourceWeightingCfg
+    origin_balance: OriginBalanceCfg
 
 
 @dataclass(frozen=True)
 class ImagesCfg:
     og_fetch: bool
+
+
+@dataclass(frozen=True)
+class ArticlesCfg:
+    fetch_full_text: bool
+    max_chars: int
+
+
+@dataclass(frozen=True)
+class MediaCfg:
+    enable_video: bool
+    max_image_bytes: int
+    max_video_bytes: int
 
 
 @dataclass(frozen=True)
@@ -243,6 +267,56 @@ class AnalyticsCfg:
 
 
 @dataclass(frozen=True)
+class ModerationCfg:
+    # When the section is absent the feature stays off so old configs behave as before.
+    enabled: bool = False
+    timeout_minutes: int = 45
+    on_timeout: str = "skip"  # "skip" | "publish"
+
+
+@dataclass(frozen=True)
+class RankingCfg:
+    # Comparative batch ranking instead of an absolute score threshold.
+    # Off by default: the legacy min_post_score path keeps working untouched.
+    enabled: bool = False
+    cycle_minutes: int = 25
+    window_hours: int = 3
+    model: str = "gpt-4o"
+    max_picks: int = 2
+    max_age_hours: int = 8
+
+
+@dataclass(frozen=True)
+class ClusterWrapCfg:
+    # Story-wrap thresholds used when clustering is on (replaces category rules).
+    min_items: int = 3
+    min_sources: int = 2
+    lookback_hours: int = 6
+    cooldown_minutes: int = 90
+
+
+@dataclass(frozen=True)
+class ClusteringCfg:
+    # Embedding-based event identity instead of the LLM event_key.
+    # Off by default: event_key matching and category wraps keep working.
+    enabled: bool = False
+    threshold: float = 0.80
+    window_hours: int = 48
+    wrap: ClusterWrapCfg = ClusterWrapCfg()
+
+
+@dataclass(frozen=True)
+class EngagementCfg:
+    enabled: bool = True
+    poll_hours: int = 6
+    lookback_hours: int = 72
+    max_posts: int = 50
+    # Optional MTProto path (Telethon) for views/forwards; requires env credentials
+    # and the telethon package. Never a hard dependency.
+    mtproto_enabled: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     telegram: TelegramCfg
     openai: OpenAICfg
@@ -261,6 +335,12 @@ class AppConfig:
     analytics: AnalyticsCfg
     text_processing: TextProcessingCfg
     editorial: EditorialCfg
+    articles: ArticlesCfg
+    media: MediaCfg
+    moderation: ModerationCfg
+    engagement: EngagementCfg
+    ranking: RankingCfg
+    clustering: ClusteringCfg
 
     @staticmethod
     def load(path: str = "config.yaml") -> "AppConfig":
@@ -321,12 +401,16 @@ class AppConfig:
         sources_cfg: list[SourceCfg] = []
         for idx, item in enumerate(sources_raw):
             s = _as_dict(item, f"sources[{idx}]")
+            origin = str(s.get("origin") or "world").strip().lower()
+            if origin not in ("ua", "world"):
+                raise ValueError(f"sources[{idx}].origin must be 'ua' or 'world', got: {origin!r}")
             sources_cfg.append(
                 SourceCfg(
                     name=str(_req(s, "name", f"sources[{idx}]")).strip(),
                     url=str(_req(s, "url", f"sources[{idx}]")).strip(),
                     deny_title_regex=_as_str_list(s.get("deny_title_regex")),
                     deny_url_regex=_as_str_list(s.get("deny_url_regex")),
+                    origin=origin,
                 )
             )
 
@@ -489,5 +573,72 @@ class AppConfig:
                 source_weighting=SourceWeightingCfg(
                     high_trust_sources=_as_str_list(editorial_sources.get("high_trust_sources") or ["Reuters", "Bloomberg", "Financial Times", "Associated Press"]),
                 ),
+                origin_balance=OriginBalanceCfg(
+                    enabled=_as_bool(_as_dict(editorial.get("origin_balance") or {}, "editorial.origin_balance").get("enabled", True), "editorial.origin_balance.enabled"),
+                    lookback_hours=_as_int(_as_dict(editorial.get("origin_balance") or {}, "editorial.origin_balance").get("lookback_hours", 12), "editorial.origin_balance.lookback_hours"),
+                    max_origin_share=_as_float(_as_dict(editorial.get("origin_balance") or {}, "editorial.origin_balance").get("max_origin_share", 0.60), "editorial.origin_balance.max_origin_share"),
+                    min_posts=_as_int(_as_dict(editorial.get("origin_balance") or {}, "editorial.origin_balance").get("min_posts", 6), "editorial.origin_balance.min_posts"),
+                    ua_relevance_boost=_as_float(_as_dict(editorial.get("origin_balance") or {}, "editorial.origin_balance").get("ua_relevance_boost", 0.10), "editorial.origin_balance.ua_relevance_boost"),
+                ),
             ),
+            articles=ArticlesCfg(
+                fetch_full_text=_as_bool(_as_dict(raw.get("articles") or {}, "articles").get("fetch_full_text", True), "articles.fetch_full_text"),
+                max_chars=_as_int(_as_dict(raw.get("articles") or {}, "articles").get("max_chars", 3000), "articles.max_chars"),
+            ),
+            media=MediaCfg(
+                enable_video=_as_bool(_as_dict(raw.get("media") or {}, "media").get("enable_video", True), "media.enable_video"),
+                max_image_bytes=_as_int(_as_dict(raw.get("media") or {}, "media").get("max_image_bytes", 5 * 1024 * 1024), "media.max_image_bytes"),
+                max_video_bytes=_as_int(_as_dict(raw.get("media") or {}, "media").get("max_video_bytes", 20 * 1024 * 1024), "media.max_video_bytes"),
+            ),
+            moderation=_load_moderation_cfg(_as_dict(raw.get("moderation") or {}, "moderation")),
+            engagement=_load_engagement_cfg(_as_dict(raw.get("engagement") or {}, "engagement")),
+            ranking=_load_ranking_cfg(_as_dict(raw.get("ranking") or {}, "ranking")),
+            clustering=_load_clustering_cfg(_as_dict(raw.get("clustering") or {}, "clustering")),
         )
+
+
+def _load_clustering_cfg(section: dict[str, Any]) -> ClusteringCfg:
+    wrap = _as_dict(section.get("wrap") or {}, "clustering.wrap")
+    return ClusteringCfg(
+        enabled=_as_bool(section.get("enabled", False), "clustering.enabled"),
+        threshold=_as_float(section.get("threshold", 0.80), "clustering.threshold"),
+        window_hours=_as_int(section.get("window_hours", 48), "clustering.window_hours"),
+        wrap=ClusterWrapCfg(
+            min_items=_as_int(wrap.get("min_items", 3), "clustering.wrap.min_items"),
+            min_sources=_as_int(wrap.get("min_sources", 2), "clustering.wrap.min_sources"),
+            lookback_hours=_as_int(wrap.get("lookback_hours", 6), "clustering.wrap.lookback_hours"),
+            cooldown_minutes=_as_int(wrap.get("cooldown_minutes", 90), "clustering.wrap.cooldown_minutes"),
+        ),
+    )
+
+
+def _load_ranking_cfg(section: dict[str, Any]) -> RankingCfg:
+    return RankingCfg(
+        enabled=_as_bool(section.get("enabled", False), "ranking.enabled"),
+        cycle_minutes=_as_int(section.get("cycle_minutes", 25), "ranking.cycle_minutes"),
+        window_hours=_as_int(section.get("window_hours", 3), "ranking.window_hours"),
+        model=str(section.get("model") or "gpt-4o").strip(),
+        max_picks=_as_int(section.get("max_picks", 2), "ranking.max_picks"),
+        max_age_hours=_as_int(section.get("max_age_hours", 8), "ranking.max_age_hours"),
+    )
+
+
+def _load_engagement_cfg(section: dict[str, Any]) -> EngagementCfg:
+    return EngagementCfg(
+        enabled=_as_bool(section.get("enabled", True), "engagement.enabled"),
+        poll_hours=_as_int(section.get("poll_hours", 6), "engagement.poll_hours"),
+        lookback_hours=_as_int(section.get("lookback_hours", 72), "engagement.lookback_hours"),
+        max_posts=_as_int(section.get("max_posts", 50), "engagement.max_posts"),
+        mtproto_enabled=_as_bool(section.get("mtproto_enabled", False), "engagement.mtproto_enabled"),
+    )
+
+
+def _load_moderation_cfg(section: dict[str, Any]) -> ModerationCfg:
+    on_timeout = str(section.get("on_timeout") or "skip").strip().lower()
+    if on_timeout not in ("skip", "publish"):
+        raise ValueError(f"moderation.on_timeout must be 'skip' or 'publish', got: {on_timeout!r}")
+    return ModerationCfg(
+        enabled=_as_bool(section.get("enabled", False), "moderation.enabled"),
+        timeout_minutes=_as_int(section.get("timeout_minutes", 45), "moderation.timeout_minutes"),
+        on_timeout=on_timeout,
+    )

@@ -12,6 +12,11 @@ class PromptManager:
         "market_wrap_prompt",
         "geopolitical_wrap_prompt",
         "tech_wrap_prompt",
+        # Phase 3: ranking mode
+        "classify_prompt",
+        "ranking_prompt",
+        # Phase 4: story wraps over event clusters
+        "cluster_wrap_prompt",
     ]
 
     def __init__(self, repo_factory: Callable[[], object], defaults: Dict[str, str]):

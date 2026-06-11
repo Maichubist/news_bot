@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List
+from typing import List, Optional, Tuple
 
 import feedparser
 
@@ -15,6 +15,8 @@ from app.text.datetime_parse import parse_datetime
 
 
 log = logging.getLogger("rss.fetcher")
+
+_VIDEO_EXT_RE = re.compile(r"\.(mp4|mov|webm|m4v)(\?|#|$)", re.IGNORECASE)
 
 
 class RssFetcher:
@@ -45,7 +47,6 @@ class RssFetcher:
         u = (link or "").strip()
         s = (summary or "").strip()
 
-        # Global patterns
         for p in self._global_deny_title:
             if p.search(t):
                 return True
@@ -57,7 +58,6 @@ class RssFetcher:
                 if p.search(s):
                     return True
 
-        # Per-source patterns
         for pat in (src.deny_title_regex or []):
             try:
                 if re.search(pat, t, flags=re.IGNORECASE):
@@ -73,39 +73,113 @@ class RssFetcher:
 
         return False
 
-    def _pick_rss_image(self, entry) -> str | None:
-        # Try common RSS fields: media:content, media_thumbnail, enclosures
+    # ------------------------------------------------------------------ media
+
+    @staticmethod
+    def _is_image_type(mime: str, url: str) -> bool:
+        mime = (mime or "").lower()
+        if mime.startswith("image/"):
+            return True
+        if mime:
+            return False
+        return bool(re.search(r"\.(jpe?g|png|webp|gif|avif)(\?|#|$)", url or "", re.IGNORECASE))
+
+    @staticmethod
+    def _is_video_type(mime: str, url: str) -> bool:
+        mime = (mime or "").lower()
+        if mime.startswith("video/"):
+            return True
+        if mime:
+            return False
+        return bool(_VIDEO_EXT_RE.search(url or ""))
+
+    def _extract_media(self, entry) -> Tuple[List[str], Optional[str]]:
+        """
+        Collect ALL image candidates (best-first) and the first direct video URL
+        from an RSS entry. Covers media:content, media:group, media:thumbnail
+        and enclosures. Width attribute is used to prefer larger images.
+        """
+        images: list[tuple[int, str]] = []  # (width, url) for sorting
+        video_url: Optional[str] = None
+        seen: set[str] = set()
+
+        def add_image(url: str, width: int = 0) -> None:
+            u = (url or "").strip()
+            if not u or u in seen:
+                return
+            seen.add(u)
+            try:
+                u = canonicalize_url(u)
+            except Exception:
+                pass
+            images.append((int(width or 0), u))
+
+        def consider(url: str, mime: str, width: int = 0, medium: str = "") -> None:
+            nonlocal video_url
+            u = (url or "").strip()
+            if not u:
+                return
+            medium = (medium or "").lower()
+            if medium == "video" or self._is_video_type(mime, u):
+                if video_url is None:
+                    video_url = u
+                return
+            if medium == "image" or self._is_image_type(mime, u):
+                add_image(u, width)
+
+        # media:content (also flattened from media:group by feedparser)
         try:
-            media = getattr(entry, "media_content", None)
-            if media and isinstance(media, list):
-                for m in media:
-                    url = (m.get("url") or "").strip()
-                    if url:
-                        return canonicalize_url(url)
+            for m in getattr(entry, "media_content", None) or []:
+                w = m.get("width")
+                consider(
+                    m.get("url") or "",
+                    m.get("type") or "",
+                    width=int(w) if str(w or "").isdigit() else 0,
+                    medium=m.get("medium") or "",
+                )
         except Exception:
             pass
 
+        # media:thumbnail — usually small, keep as fallback (width 0)
         try:
-            thumbs = getattr(entry, "media_thumbnail", None)
-            if thumbs and isinstance(thumbs, list):
-                for t in thumbs:
-                    url = (t.get("url") or "").strip()
-                    if url:
-                        return canonicalize_url(url)
+            for t in getattr(entry, "media_thumbnail", None) or []:
+                add_image(t.get("url") or "", width=0)
         except Exception:
             pass
 
+        # enclosures
         try:
-            enclosures = getattr(entry, "enclosures", None)
-            if enclosures and isinstance(enclosures, list):
-                for e in enclosures:
-                    url = (e.get("href") or e.get("url") or "").strip()
-                    if url:
-                        return canonicalize_url(url)
+            for e in getattr(entry, "enclosures", None) or []:
+                consider(e.get("href") or e.get("url") or "", e.get("type") or "")
         except Exception:
             pass
 
-        return None
+        # <img> inside summary/content HTML (common for UA feeds: УП, НВ, Ліга)
+        try:
+            html_blobs = []
+            if getattr(entry, "summary", None):
+                html_blobs.append(entry.summary)
+            for c in getattr(entry, "content", None) or []:
+                v = c.get("value") if isinstance(c, dict) else getattr(c, "value", "")
+                if v:
+                    html_blobs.append(v)
+            for blob in html_blobs:
+                for m in re.finditer(r'<img[^>]+src=["\047]([^"\047]+)["\047]', blob, re.IGNORECASE):
+                    add_image(m.group(1), width=0)
+        except Exception:
+            pass
+
+        # biggest declared width first; equal widths keep feed order (stable sort)
+        images.sort(key=lambda p: -p[0])
+        ordered = [u for _, u in images]
+        if video_url:
+            try:
+                video_url = canonicalize_url(video_url)
+            except Exception:
+                pass
+        return ordered, video_url
+
+    # ------------------------------------------------------------------ fetch
 
     def _fetch_with_fallback_ua(self, url: str, user_agents: list[str] | None) -> str | None:
         # Some feeds block generic agents; try a small UA rotation on 401/403/406.
@@ -115,7 +189,7 @@ class RssFetcher:
 
         base_headers = {
             "Accept": "application/rss+xml,application/xml;q=0.9,text/xml;q=0.8,*/*;q=0.7",
-            "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8,uk;q=0.7",
+            "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
         }
@@ -149,10 +223,15 @@ class RssFetcher:
                     continue
 
                 feed = feedparser.parse(feed_text)
-                if getattr(feed, "bozo", False):
-                    log.warning("Bozo feed: %s", src.url)
+                # bozo=True often means a cosmetic encoding/namespace issue while
+                # entries are perfectly usable. Only skip when there is truly nothing.
+                if getattr(feed, "bozo", False) and not getattr(feed, "entries", None):
+                    log.warning("Bozo feed with no entries, skipping: %s", src.url)
                     continue
+                if getattr(feed, "bozo", False):
+                    log.debug("Bozo feed but %d entries parsed: %s", len(feed.entries), src.url)
 
+                got = 0
                 for e in feed.entries[:limit_per_feed]:
                     title = getattr(e, "title", "").strip()
                     link = getattr(e, "link", "").strip()
@@ -164,11 +243,11 @@ class RssFetcher:
                     raw_summary = getattr(e, "summary", "") or getattr(e, "description", "") or ""
                     summary = clean_summary(raw_summary) if raw_summary else None
 
-                    # Fast filtering (ads/promos/videos/newsletters/etc.)
+                    # Fast filtering (ads/promos/newsletters/etc.)
                     if self._is_denied(src, title=title, link=link, summary=summary):
                         continue
 
-                    image_url = self._pick_rss_image(e)
+                    images, video_url = self._extract_media(e)
 
                     items.append(
                         NewsItem(
@@ -177,9 +256,15 @@ class RssFetcher:
                             link=canonicalize_url(link),
                             summary=summary,
                             published_at=published_at,
-                            image_url=image_url,
+                            image_url=images[0] if images else None,
+                            origin=getattr(src, "origin", "world") or "world",
+                            video_url=video_url,
+                            images=tuple(images),
                         )
                     )
+                    got += 1
+
+                log.info("Feed %s: %d items accepted", src.name, got)
             except Exception as ex:
                 log.exception("Failed to fetch feed %s: %s", src.url, ex)
 
